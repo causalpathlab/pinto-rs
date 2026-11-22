@@ -45,7 +45,7 @@ pub struct SrtDeltaSvdArgs {
 pub(super) struct FusedDeltaInput<'a> {
     pub(super) batch_effect: Option<&'a Mat>,
     /// Each pair's own batch fold, in pair order, in place of `batch_effect`.
-    pub(super) pair_fold: Option<&'a crate::util::batch_fold::FoldTable>,
+    pub(super) pair_fold: Option<&'a crate::util::batch_fold::PairFold>,
     pub(super) pair_to_sample: &'a [usize],
 }
 
@@ -271,7 +271,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
 
     let fused_input = FusedDeltaInput {
         batch_effect: batch_ref,
-        pair_fold: pair_fold.as_ref().map(|f| &f.table),
+        pair_fold: pair_fold.as_ref(),
         pair_to_sample: finest_pair_to_sample,
     };
 
@@ -324,7 +324,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         basis_shared: basis_dk.rows(0, n_features).clone_owned(),
         basis_diff: basis_dk.rows(n_features, n_features).clone_owned(),
         batch_effect: batch_db,
-        pair_fold: pair_fold.as_ref().map(|f| &f.table),
+        pair_fold: pair_fold.as_ref(),
     };
 
     srt_cell_pairs.inner.visit_pairs_by_block(
@@ -455,11 +455,11 @@ fn read_log_normalized(
     data: &CellPairs,
     cells: impl Iterator<Item = usize> + Clone,
     batch_effect: Option<&Mat>,
-    pair_fold: Option<(&crate::util::batch_fold::FoldTable, usize)>,
+    pair_fold: Option<(&crate::util::batch_fold::PairFold, usize, bool)>,
 ) -> anyhow::Result<nalgebra_sparse::CscMatrix<f32>> {
     let mut y = data.data.read_columns_csc(cells.clone())?;
-    if let Some((table, first)) = pair_fold {
-        crate::util::batch_fold::divide_by_pair_folds_log1p(&mut y, table, first);
+    if let Some((table, first, second)) = pair_fold {
+        crate::util::batch_fold::divide_by_pair_folds_log1p(&mut y, table, first, second);
         return Ok(y);
     }
     if let Some(delta_db) = batch_effect {
@@ -489,9 +489,18 @@ pub(super) fn fused_pair_delta_visitor(
     // order and zipping them.
     let left = pairs.iter().map(|x| x.0);
     let right = pairs.iter().map(|x| x.1);
-    let fold = input.pair_fold.map(|t| (t, lb));
-    let y_left = read_log_normalized(data, left, input.batch_effect, fold)?;
-    let y_right = read_log_normalized(data, right, input.batch_effect, fold)?;
+    let y_left = read_log_normalized(
+        data,
+        left,
+        input.batch_effect,
+        input.pair_fold.map(|t| (t, lb, false)),
+    )?;
+    let y_right = read_log_normalized(
+        data,
+        right,
+        input.batch_effect,
+        input.pair_fold.map(|t| (t, lb, true)),
+    )?;
 
     // Per-pair SPARSE contributions: a pair touches its nonzero features, not
     // all of them, and the lock below only pays for what it touches.
@@ -565,7 +574,7 @@ pub(super) struct NystromPairInput<'a> {
     pub(super) basis_diff: Mat,
     pub(super) batch_effect: Option<Mat>,
     /// Each pair's own batch fold, in pair order, in place of `batch_effect`.
-    pub(super) pair_fold: Option<&'a crate::util::batch_fold::FoldTable>,
+    pub(super) pair_fold: Option<&'a crate::util::batch_fold::PairFold>,
 }
 
 /// Nystrom projection visitor: project each pair onto the split basis.
@@ -589,9 +598,18 @@ pub(super) fn nystrom_pair_delta_visitor(
     let left = pairs.iter().map(|pp| pp.0);
     let right = pairs.iter().map(|pp| pp.1);
 
-    let fold = shared_in.pair_fold.map(|t| (t, lb));
-    let y_left = read_log_normalized(data, left, shared_in.batch_effect.as_ref(), fold)?;
-    let y_right = read_log_normalized(data, right, shared_in.batch_effect.as_ref(), fold)?;
+    let y_left = read_log_normalized(
+        data,
+        left,
+        shared_in.batch_effect.as_ref(),
+        shared_in.pair_fold.map(|t| (t, lb, false)),
+    )?;
+    let y_right = read_log_normalized(
+        data,
+        right,
+        shared_in.batch_effect.as_ref(),
+        shared_in.pair_fold.map(|t| (t, lb, true)),
+    )?;
 
     let n_topics = shared_in.basis_shared.ncols();
     let n_pairs_block = ub - lb;

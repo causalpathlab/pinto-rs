@@ -157,8 +157,8 @@ pub(crate) fn read_unique_cells_for_edges(
 /// * `basis` - Projection basis [n_features × proj_dim]
 /// * `block_size` - Edges per parallel chunk (None ⇒ adaptive default)
 /// * `divisor` - What divides every count first: the run's batch effect
-/// * `pair_fold` - Each edge's own batch fold (`all_edges` order), dividing
-///   the pair's pooled counts in place of `divisor`
+/// * `pair_fold` - Each edge's batch fold per endpoint (`all_edges` order),
+///   dividing each endpoint's counts in place of `divisor`
 ///   ([`crate::util::batch_fold::PairFold`])
 pub fn build_projection_profiles_for_edges(
     data: &SparseIoVec,
@@ -167,7 +167,7 @@ pub fn build_projection_profiles_for_edges(
     basis: &Mat,
     block_size: Option<usize>,
     divisor: Option<Divisor<'_>>,
-    pair_fold: Option<&crate::util::batch_fold::FoldTable>,
+    pair_fold: Option<&crate::util::batch_fold::PairFold>,
 ) -> anyhow::Result<LinkProfileStore> {
     // a pair divides by its own fold, never by its cells' δ as well
     let divisor = if pair_fold.is_some() { None } else { divisor };
@@ -210,25 +210,28 @@ pub fn build_projection_profiles_for_edges(
 
             for (job_edge, &(cell_u, cell_v)) in job_edges.iter().enumerate() {
                 pooled_g.fill(0.0);
-                for read_col in [col_of_cell[&cell_u], col_of_cell[&cell_v]] {
+                let folds =
+                    pair_fold.map(|f| f.endpoint_folds(edge_indices[edge_begin + job_edge]));
+                for (side, read_col) in [col_of_cell[&cell_u], col_of_cell[&cell_v]]
+                    .into_iter()
+                    .enumerate()
+                {
                     let cell_counts = x_gc.col(read_col);
+                    let fold = folds
+                        .as_ref()
+                        .map(|(fu, fv)| if side == 0 { fu } else { fv });
                     for (&feature, &count) in cell_counts
                         .row_indices()
                         .iter()
                         .zip(cell_counts.values().iter())
                     {
-                        pooled_g[feature] += count;
+                        pooled_g[feature] += match fold {
+                            Some(f) if f[feature] > 0.0 => count / f[feature],
+                            _ => count,
+                        };
                     }
                 }
 
-                if let Some(fold) = pair_fold {
-                    let f = fold.unit_fold(edge_indices[edge_begin + job_edge]);
-                    pooled_g.zip_apply(&f, |x, d| {
-                        if d > 0.0 {
-                            *x /= d;
-                        }
-                    });
-                }
                 let projected_m = &basis_t * &pooled_g;
                 let profile_offset = job_edge * m;
                 for (dim, &value) in projected_m.iter().enumerate() {
@@ -378,16 +381,11 @@ pub fn coarsen_cell_expression_dense(
 /// The alternative is to (incorrectly) read fine-cell columns at indices
 /// equal to cluster labels — which gave arbitrary fine cells as
 /// "pb-samples". This function replaces that path.
-///
-/// With `super_fold` (`[rows × super-edges]`, a super edge's batch fold, the
-/// geometric mean of its pairs' folds), each super edge's pooled counts are
-/// divided by its own column first.
 pub fn build_super_edge_projection_profiles(
     super_expr: &Mat,
     super_edges: &[(usize, usize)],
     edge_indices: &[usize],
     basis: &Mat,
-    super_fold: Option<&Mat>,
 ) -> LinkProfileStore {
     debug_assert_eq!(super_expr.nrows(), basis.nrows());
     let n_edges = edge_indices.len();
@@ -402,13 +400,6 @@ pub fn build_super_edge_projection_profiles(
         temp_g.fill(0.0);
         temp_g += super_expr.column(a);
         temp_g += super_expr.column(b);
-        if let Some(fold) = super_fold {
-            temp_g.zip_apply(&fold.column(ei), |x, d| {
-                if d > 0.0 {
-                    *x /= d;
-                }
-            });
-        }
 
         let proj = &basis_t * &temp_g;
         let base = e_idx * m;

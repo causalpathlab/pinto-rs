@@ -42,7 +42,7 @@ metal = [
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.13", default-features = false, features = ["aux", "alg", "tensor", "sim"] }
+data-beans = { version = "0.13.1", default-features = false, features = ["aux", "alg", "tensor", "sim"] }
 legume-numeric = { version = "0.10.10", features = ["matrix", "param", "candle", "mcmc"] }
 graph-embedding-util = { version = "0.13", package = "legume-graph-embedding" }
 parquet = "59"
@@ -109,7 +109,3 @@ opt-level = 1
 
 [profile.test.package."*"]
 opt-level = 2
-
-# TEMPORARY: data-beans PR #59 (group fold), until it is released
-[patch.crates-io]
-data-beans = { path = "../data-beans" }

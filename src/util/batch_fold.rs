@@ -60,11 +60,6 @@ impl FoldTable {
             batch_of_cell: &self.col_of_unit,
         }
     }
-
-    /// Unit `u`'s fold over the rows.
-    pub fn unit_fold(&self, u: usize) -> nalgebra::DVectorView<'_, f32> {
-        self.fold.column(self.col_of_unit[u] as usize)
-    }
 }
 
 /// Each cell's own fold (samples kind), and the fit that placed the cells,
@@ -81,34 +76,28 @@ impl CellFold {
     }
 }
 
-/// Each listed pair's own fold (graph kind), in the order of the pairs it was
-/// estimated on.
+/// Each listed pair's fold per endpoint (graph kind), in the order of the
+/// pairs it was estimated on: a within-batch pair's two endpoints both take
+/// the pair's own fold; a pair across batches has none, and each endpoint
+/// takes its own cell's fold.
 pub struct PairFold {
-    pub table: FoldTable,
+    /// `[rows × columns]`: the pair folds' columns, then the cell folds'.
+    pub fold: Mat,
+    /// Each pair's (first endpoint's, second endpoint's) column of `fold`.
+    pub endpoint_cols: Vec<(u32, u32)>,
 }
 
 impl PairFold {
-    /// Each super edge's fold, `[rows × n_super]`: the geometric mean of its
-    /// pairs' folds (`fine_to_super[e]`, the super edge of pair `e`; one out
-    /// of range: in none). A super edge with no pair takes fold 1.
-    pub fn super_edge_folds(&self, fine_to_super: &[usize], n_super: usize) -> Mat {
-        let rows = self.table.fold.nrows();
-        let mut log_sum = Mat::zeros(rows, n_super);
-        let mut count = vec![0f32; n_super];
-        for (e, &s) in fine_to_super.iter().enumerate() {
-            if s < n_super {
-                let f = self.table.unit_fold(e);
-                for r in 0..rows {
-                    log_sum[(r, s)] += f[r].ln();
-                }
-                count[s] += 1.0;
-            }
-        }
-        for (s, &c) in count.iter().enumerate() {
-            let scale = if c > 0.0 { 1.0 / c } else { 0.0 };
-            log_sum.column_mut(s).apply(|v| *v = (*v * scale).exp());
-        }
-        log_sum
+    /// Pair `e`'s fold for its first and its second endpoint.
+    pub fn endpoint_folds(
+        &self,
+        e: usize,
+    ) -> (
+        nalgebra::DVectorView<'_, f32>,
+        nalgebra::DVectorView<'_, f32>,
+    ) {
+        let (a, b) = self.endpoint_cols[e];
+        (self.fold.column(a as usize), self.fold.column(b as usize))
     }
 }
 
@@ -179,22 +168,50 @@ pub fn estimate_pair_batch_fold(
     )?;
     let first_cell: Vec<usize> = pairs.iter().map(|&(u, _)| u).collect();
     let batch_of_cell = cells.batch_of_cell();
-    let table = FoldTable::of(&fold.fold, |e| batch_of_cell[first_cell[e]]);
-    Ok(PairFold { table })
+    let pair_table = FoldTable::of(&fold.fold, |e| batch_of_cell[first_cell[e]]);
+    // the pair folds' columns, then the cells'; a pair without a node (across
+    // batches) divides each endpoint by its own cell's fold
+    let n_pair_cols = pair_table.fold.ncols();
+    let mut table = Mat::zeros(
+        pair_table.fold.nrows(),
+        n_pair_cols + cells.table.fold.ncols(),
+    );
+    table
+        .columns_mut(0, n_pair_cols)
+        .copy_from(&pair_table.fold);
+    table
+        .columns_mut(n_pair_cols, cells.table.fold.ncols())
+        .copy_from(&cells.table.fold);
+    let endpoint_cols = pairs
+        .iter()
+        .enumerate()
+        .map(|(e, &(u, v))| match fold.fold.node_of_unit[e] {
+            Some(_) => (pair_table.col_of_unit[e], pair_table.col_of_unit[e]),
+            None => {
+                let cell = |c: usize| n_pair_cols as u32 + cells.table.col_of_unit[c];
+                (cell(u), cell(v))
+            }
+        })
+        .collect();
+    Ok(PairFold {
+        fold: table,
+        endpoint_cols,
+    })
 }
 
-/// Columns of `y`, column `j` an endpoint of pair `first + j`, divided by that
-/// pair's fold with the scale-matched division (the fold's mean over the
-/// column's nonzeros is matched to theirs: `x / (d · λ)`,
-/// `λ = Σ x / Σ d`), then `log1p`. No library-size rescale: it would cancel
-/// the fold.
+/// Columns of `y`, column `j` one endpoint of pair `first + j` (`second`:
+/// the pairs' second endpoints), each divided by that endpoint's fold with
+/// the scale-matched division (the fold's mean over the column's nonzeros is
+/// matched to theirs: `x / (d · λ)`, `λ = Σ x / Σ d`), then `log1p`.
 pub fn divide_by_pair_folds_log1p(
     y: &mut nalgebra_sparse::CscMatrix<f32>,
-    table: &FoldTable,
+    pair_fold: &PairFold,
     first: usize,
+    second: bool,
 ) {
     for (j, mut col) in y.col_iter_mut().enumerate() {
-        let f = table.unit_fold(first + j);
+        let (fu, fv) = pair_fold.endpoint_folds(first + j);
+        let f = if second { fv } else { fu };
         let (rows, vals) = col.rows_and_values_mut();
         let sum_x: f32 = vals.iter().sum();
         let sum_d: f32 = rows.iter().map(|&r| f[r]).sum();

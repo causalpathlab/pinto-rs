@@ -51,9 +51,9 @@ pub enum ProfileMode<'a> {
         /// The run's batch effect `[rows × batches]`, divided out of every
         /// count before it is pooled or projected; `None` without one.
         divisor: Option<crate::util::batch_effects::Divisor<'a>>,
-        /// Each fine edge's own batch fold, in edge order, in place of
-        /// `divisor`: a pair divides by its fold, a super edge by the
-        /// geometric mean of its pairs' ([`crate::util::batch_fold::PairFold`]).
+        /// Each fine edge's batch fold per endpoint, in edge order, in place
+        /// of `divisor` for the fine edges ([`crate::util::batch_fold::PairFold`]);
+        /// super-cells keep `divisor`.
         pair_fold: Option<&'a crate::util::batch_fold::PairFold>,
     },
 }
@@ -143,7 +143,6 @@ pub fn run_cascade(
             data_vec,
             &super_edges_l,
             &super_edge_indices,
-            &fine_to_super_l,
             mode,
             cell_labels_l,
             n_cell_groups,
@@ -249,7 +248,6 @@ fn build_level_profiles(
     data: &SparseIoVec,
     super_edges: &[(usize, usize)],
     super_edge_indices: &[usize],
-    fine_to_super: &[usize],
     mode: &ProfileMode<'_>,
     cell_labels: &[usize],
     n_pb_samples: usize,
@@ -273,16 +271,9 @@ fn build_level_profiles(
                 basis,
             ))
         }
-        ProfileMode::Projection {
-            basis,
-            divisor,
-            pair_fold,
-        } => {
-            // with a pair fold, super-cells pool raw counts and each super
-            // edge divides by its own pairs' fold
-            let divisor = if pair_fold.is_some() { None } else { divisor };
-            let super_fold =
-                pair_fold.map(|f| f.super_edge_folds(fine_to_super, super_edges.len()));
+        ProfileMode::Projection { basis, divisor, .. } => {
+            // super-cells pool their cells' counts, each cell divided by its
+            // own fold (`divisor`); the pair fold divides the fine edges only
             // Coarsen fine-cell expression to pb-samples, then project
             // pb-sample aggregates through the basis. Previously this path
             // passed fine-cell data with cluster-label indices, which read
@@ -295,7 +286,6 @@ fn build_level_profiles(
                 super_edges,
                 super_edge_indices,
                 basis,
-                super_fold.as_ref(),
             ))
         }
     }

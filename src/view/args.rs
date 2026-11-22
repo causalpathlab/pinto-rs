@@ -6,6 +6,7 @@ use super::render::Layer;
 use clap::Args;
 
 #[derive(Args, Clone, Debug)]
+#[command(group(clap::ArgGroup::new("still_output").args(["png", "pdf"]).multiple(true)))]
 pub struct ViewArgs {
     #[arg(
         help = "Run prefix (as given to -o) or its .pinto.json [default: browse]",
@@ -29,6 +30,7 @@ pub struct ViewArgs {
 
     #[arg(
         long,
+        requires = "still_output",
         help = "With --png/--pdf, draw the structure plot instead of the map",
         long_help = "With --png and/or --pdf, draw the level's structure plot\n\
                      (every cell's community mixture as a stacked bar, a panel\n\

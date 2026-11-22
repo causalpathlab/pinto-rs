@@ -654,8 +654,19 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // tests stay in step by construction rather than by both remembering to
     // say `&& has_coords`. That agreement is what the `expect` below rests on.
     let augment_knn = knn.augment;
-    let take_projection =
-        cfg.cell_projection || augment_knn > 0 || cfg.batch_fold != BatchFoldKind::None;
+    // the state-aware fold: a fit that estimates δ and asks for it. Not with
+    // CNV clone strata: the pair-unit collapse does not carry them yet
+    let fold_wanted = cfg.batch_fold != BatchFoldKind::None
+        && cfg.batch_effects == BatchEstimate::Fit
+        && estimate
+        && batch_labels.len() > 1;
+    let fold_wanted = if fold_wanted && c.collapse.cnv_clones.is_some() {
+        info!("--cnv-clones: the state-aware batch fold is skipped; dividing by δ alone");
+        false
+    } else {
+        fold_wanted
+    };
+    let take_projection = cfg.cell_projection || augment_knn > 0 || fold_wanted;
     // An estimate that gives no δ is no estimate: nothing is divided, and
     // nothing is corrected for it.
     let mut batch_effects = match early_estimate {
@@ -788,8 +799,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
 
     let (cell_fold, pair_fold) = match (&batch_effects, cell_proj.as_ref()) {
         (Some(effects), Some(proj))
-            if cfg.batch_fold != BatchFoldKind::None
-                && cfg.batch_effects == BatchEstimate::Fit
+            if fold_wanted
                 && effects.groups.coarsest.len() == n_cells
                 && effects.groups.finest.len() == n_cells =>
         {
@@ -819,7 +829,15 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
                 .transpose()?;
             (Some(cells), pairs)
         }
-        _ => (None, None),
+        _ => {
+            if fold_wanted && batch_effects.is_some() {
+                warn!(
+                    "the state-aware batch fold was not estimated (the collapse's groups do not \
+                     cover the cells); dividing by δ alone"
+                );
+            }
+            (None, None)
+        }
     };
 
     Ok(SrtPreprocessed {

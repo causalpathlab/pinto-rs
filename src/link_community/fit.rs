@@ -301,9 +301,14 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             // profiles at every level, the module expression), as dsvd and
             // cage divide theirs, and the written feature_community; the
             // feature filters stay on raw counts.
-            divisor: batch_effects
-                .as_ref()
-                .map(crate::util::batch_effects::Divisor::Registered),
+            // each cell's own fold, else δ (super-cells); fine edges divide
+            // by their pair's fold per endpoint
+            divisor: match cell_fold.as_ref() {
+                Some(f) => Some(f.table.divisor().into()),
+                None => batch_effects
+                    .as_ref()
+                    .map(crate::util::batch_effects::Divisor::Registered),
+            },
             pair_fold: pair_fold.as_ref(),
         }
     };
@@ -807,7 +812,7 @@ fn build_full_profiles(
             basis,
             None,
             divisor,
-            pair_fold.map(|f| &f.table),
+            pair_fold,
         ),
     }
 }

@@ -237,13 +237,10 @@ fn estimate_batch(
     // the finest and coarsest levels' groups, shared across batches: the
     // state-aware fold matches the finest (its pseudobulks) and builds its
     // tree above the coarsest (`batch_fold`)
+    let levels = &collapse_out.cell_to_pb_per_level;
     let groups = CollapseGroups {
-        coarsest: collapse_out.cell_to_pb_per_level.pop().unwrap_or_default(),
-        finest: collapse_out
-            .cell_to_pb_per_level
-            .into_iter()
-            .next()
-            .unwrap_or_default(),
+        finest: levels.first().cloned().unwrap_or_default(),
+        coarsest: levels.last().cloned().unwrap_or_default(),
     };
 
     Ok((delta, proj_out, groups))
