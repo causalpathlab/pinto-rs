@@ -107,8 +107,12 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         feature_kind: None,
         cell_projection: true,
         auto_batch_memory_check: None,
-        batch_fold: crate::util::srt_pipeline::BatchFoldKind::Pairs,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::Pairs(
+            args.pair_fold.pair_fold_states,
+        ),
     })?;
+    let fold_written =
+        crate::util::batch_fold::FoldWritten::of(cell_fold.as_ref(), pair_fold.as_ref());
     // Only the mean divides; the full posterior is the file preprocessing wrote.
     let batch_effects = batch_effects
         .map(crate::util::batch_effects::BatchPosterior::into_mean)
@@ -557,7 +561,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 ablation,
                 delta: batch_effects
                     .is_some()
-                    .then(|| crate::util::metadata::DeltaWritten::fit(c)),
+                    .then(|| crate::util::metadata::DeltaWritten::fit(c).with_fold(fold_written)),
             },
             merge.summary,
             // What `lc` can report is the structural fact of the axis, not a

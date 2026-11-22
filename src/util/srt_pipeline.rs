@@ -80,8 +80,9 @@ pub enum BatchFoldKind {
     /// pseudobulks (sums of divided cells).
     Cells,
     /// Each cell's fold and each cell pair's own fold, estimated on pair
-    /// units: lc, dsvd and cage, which model pairs.
-    Pairs,
+    /// units over the given states (`--pair-fold-states`): lc, dsvd and
+    /// cage, which model pairs.
+    Pairs(crate::util::batch_fold::PairStates),
 }
 
 /// A check on the `--auto-batch` components before δ is estimated over
@@ -815,18 +816,20 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
                 &effects.groups,
                 &proj.proj,
             )?;
-            let pairs = (cfg.batch_fold == BatchFoldKind::Pairs)
-                .then(|| {
-                    crate::util::batch_fold::estimate_pair_batch_fold(
+            let pairs = match cfg.batch_fold {
+                BatchFoldKind::Pairs(pair_states) => {
+                    Some(crate::util::batch_fold::estimate_pair_batch_fold(
                         &data_vec,
                         &graph.edges,
                         &batch_membership,
                         &cells,
                         c.collapse.proj_dim,
                         c.collapse.num_levels,
-                    )
-                })
-                .transpose()?;
+                        pair_states,
+                    )?)
+                }
+                _ => None,
+            };
             (Some(cells), pairs)
         }
         _ => {
@@ -839,6 +842,15 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             (None, None)
         }
     };
+    // beside δ, for predict and impute ([`crate::util::batch_fold::BatchFoldFiles`])
+    crate::util::batch_fold::write_fold_tables(
+        &c.out,
+        &data_vec.row_names()?,
+        &data_vec.column_names()?,
+        &batch_labels,
+        cell_fold.as_ref(),
+        pair_fold.as_ref(),
+    )?;
 
     Ok(SrtPreprocessed {
         cell_fold,

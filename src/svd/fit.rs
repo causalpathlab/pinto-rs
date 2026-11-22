@@ -27,6 +27,9 @@ pub struct SrtDeltaSvdArgs {
     #[command(flatten)]
     pub ablation: crate::util::ablation::AblationArgs,
 
+    #[command(flatten)]
+    pub pair_fold: crate::util::batch_fold::PairFoldArgs,
+
     #[arg(
         short = 't',
         long,
@@ -199,9 +202,13 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         // ([`dsvd_cell_projection`])
         cell_projection: true,
         auto_batch_memory_check: None,
-        batch_fold: crate::util::srt_pipeline::BatchFoldKind::Pairs,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::Pairs(
+            args.pair_fold.pair_fold_states,
+        ),
         feature_kind: None,
     })?;
+    let fold_written =
+        crate::util::batch_fold::FoldWritten::of(cell_fold.as_ref(), pair_fold.as_ref());
     // Only the mean divides; the full posterior is the file preprocessing wrote.
     let batch_db = batch_db
         .map(crate::util::batch_effects::BatchPosterior::into_mean)
@@ -399,7 +406,8 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
             ablation,
             k: n_clusters,
-            delta: has_batch_effects.then(|| crate::util::metadata::DeltaWritten::fit(c)),
+            delta: has_batch_effects
+                .then(|| crate::util::metadata::DeltaWritten::fit(c).with_fold(fold_written)),
         });
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;

@@ -66,6 +66,7 @@ fn metadata_roundtrip_lc() {
             delta: Some(DeltaWritten {
                 labels: BatchLabels::Files,
                 cells: true,
+                fold: crate::util::batch_fold::FoldWritten::None,
             }),
         },
         Some(DictMergeSummary {
@@ -147,6 +148,7 @@ fn metadata_roundtrip_cage() {
             delta: Some(DeltaWritten {
                 labels: BatchLabels::Files,
                 cells: true,
+                fold: crate::util::batch_fold::FoldWritten::None,
             }),
         },
         Some(SpliceTrackInfo {
@@ -592,6 +594,7 @@ fn a_fit_records_canonical_data_files_and_its_batch_labels() {
         delta: labels.map(|labels| DeltaWritten {
             labels,
             cells: true,
+            fold: crate::util::batch_fold::FoldWritten::None,
         }),
     };
     let meta = create_cage_metadata(&inputs(Some(BatchLabels::Files)), None);
@@ -632,6 +635,7 @@ fn a_fit_records_canonical_data_files_and_its_batch_labels() {
         delta: Some(DeltaWritten {
             labels: BatchLabels::Files,
             cells: false,
+            fold: crate::util::batch_fold::FoldWritten::None,
         }),
         ..inputs(None)
     };

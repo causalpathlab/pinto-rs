@@ -196,9 +196,13 @@ pub fn fit_cell_activity_graph_embedding(
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: !hvg_enabled && coarsens,
         auto_batch_memory_check: None,
-        batch_fold: crate::util::srt_pipeline::BatchFoldKind::Pairs,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::Pairs(
+            args.pair_fold.pair_fold_states,
+        ),
         feature_kind: Some(feature_kind.clone()),
     })?;
+    let fold_written =
+        crate::util::batch_fold::FoldWritten::of(cell_fold.as_ref(), pair_fold.as_ref());
     // Only the mean divides; the full posterior is the file preprocessing wrote.
     let batch_db = batch_db
         .map(crate::util::batch_effects::BatchPosterior::into_mean)
@@ -991,7 +995,7 @@ pub fn fit_cell_activity_graph_embedding(
                 k: n_edge_clusters,
                 delta: batch_db
                     .is_some()
-                    .then(|| crate::util::metadata::DeltaWritten::fit(c)),
+                    .then(|| crate::util::metadata::DeltaWritten::fit(c).with_fold(fold_written)),
             },
             splice_report,
         );

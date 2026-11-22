@@ -15,6 +15,9 @@ pub struct SrtLinkCommunityArgs {
     #[command(flatten)]
     pub ablation: crate::util::ablation::AblationArgs,
 
+    #[command(flatten)]
+    pub pair_fold: crate::util::batch_fold::PairFoldArgs,
+
     /// pinto's `--max-threads`, set from the command line: the most blocks
     /// the Gibbs sweeps split a component into.
     #[arg(skip = crate::util::common::DEFAULT_MAX_THREADS)]

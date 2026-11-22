@@ -65,6 +65,8 @@ pub struct RunInputs<'a> {
 pub struct DeltaWritten {
     pub labels: BatchLabels,
     pub cells: bool,
+    /// The state-aware fold written beside it.
+    pub fold: crate::util::batch_fold::FoldWritten,
 }
 
 impl DeltaWritten {
@@ -73,8 +75,48 @@ impl DeltaWritten {
         Self {
             labels: BatchLabels::of(&c.batch),
             cells: true,
+            fold: crate::util::batch_fold::FoldWritten::None,
         }
     }
+
+    /// The same, with the fold the fit wrote beside it.
+    pub fn with_fold(self, fold: crate::util::batch_fold::FoldWritten) -> Self {
+        Self { fold, ..self }
+    }
+}
+
+/// The fold files and what the profiles were divided by, for a run with
+/// `inputs` ([`crate::util::batch_fold::BatchFoldFiles`]).
+fn fold_outputs(
+    inputs: &RunInputs<'_>,
+) -> (
+    Option<crate::util::batch_fold::BatchFoldFiles>,
+    Option<crate::util::batch_fold::ProfilesDividedBy>,
+) {
+    use crate::util::batch_fold::{BatchFoldFiles, ProfilesDividedBy};
+    let Some(delta) = inputs.delta else {
+        return (None, None);
+    };
+    let files = BatchFoldFiles::written(&manifest_stem(inputs.prefix), delta.fold);
+    let divided = if files.is_some() {
+        ProfilesDividedBy::CellFold
+    } else {
+        ProfilesDividedBy::Delta
+    };
+    (files, Some(divided))
+}
+
+/// The manifest's own file name less its suffix, what files beside it are
+/// recorded relative to: `-o out/` writes `out/.pinto.json` and
+/// `out/.delta.parquet`.
+fn manifest_stem(prefix: &str) -> String {
+    let manifest = manifest_path(prefix);
+    Path::new(&manifest)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .and_then(|f| f.strip_suffix(MANIFEST_SUFFIX))
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The δ outputs a run with `inputs` wrote: `delta.parquet`, and each
@@ -92,15 +134,7 @@ fn delta_outputs(inputs: &RunInputs<'_>) -> (Option<String>, Option<String>) {
 /// The δ table and each cell's batch beside it, as a fit under `prefix`
 /// writes them, relative to its manifest.
 pub(crate) fn delta_files(prefix: &str) -> (String, String) {
-    // the manifest's own file name less its suffix: `-o out/` writes
-    // `out/.pinto.json` and `out/.delta.parquet`
-    let manifest = manifest_path(prefix);
-    let name = Path::new(&manifest)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .and_then(|f| f.strip_suffix(MANIFEST_SUFFIX))
-        .unwrap_or_default()
-        .to_string();
+    let name = manifest_stem(prefix);
     (
         format!("{name}.delta.parquet"),
         crate::util::batch_effects::delta_cells_path(&name),
@@ -123,6 +157,7 @@ pub fn create_lc_metadata(
 ) -> PintoMetadata {
     let prefix = inputs.prefix;
     let (batch_effects, delta_cells) = delta_outputs(inputs);
+    let (batch_fold, profiles_divided_by) = fold_outputs(inputs);
     let dict_merge = merge.map(|m| DictMergeFiles {
         merges: format!("{prefix}.dict_merges.parquet"),
         cut: m
@@ -159,6 +194,7 @@ pub fn create_lc_metadata(
         cell_level: false,
         graph: Some(inputs.graph.clone()),
         splice,
+        batch_fold_placement: None,
         outputs: OutputFiles {
             coord_pairs: Some(format!("{prefix}.coord_pairs.parquet")),
             coord_columns: coord_columns_field(inputs.coord_columns),
@@ -170,6 +206,8 @@ pub fn create_lc_metadata(
             scores: Some(format!("{prefix}.scores.parquet")),
             batch_effects,
             delta_cells,
+            batch_fold,
+            profiles_divided_by,
             dict_merge,
             ..Default::default()
         },
@@ -198,6 +236,7 @@ fn coord_columns_field(cols: &[Box<str>]) -> Option<Vec<String>> {
 pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
     let prefix = inputs.prefix;
     let (batch_effects, delta_cells) = delta_outputs(inputs);
+    let (batch_fold, profiles_divided_by) = fold_outputs(inputs);
     let levels = vec![final_level_info(prefix, 0)];
 
     PintoMetadata {
@@ -214,6 +253,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
         cell_level: false,
         graph: Some(inputs.graph.clone()),
         splice: None,
+        batch_fold_placement: None,
         outputs: OutputFiles {
             coord_pairs: Some(format!("{prefix}.coord_pairs.parquet")),
             coord_columns: coord_columns_field(inputs.coord_columns),
@@ -223,6 +263,8 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
             feature_community_batch_adjusted: inputs.delta.is_some(),
             batch_effects,
             delta_cells,
+            batch_fold,
+            profiles_divided_by,
             ..Default::default()
         },
         levels: Some(levels),
@@ -254,6 +296,7 @@ pub fn create_cage_metadata(
 ) -> PintoMetadata {
     let prefix = inputs.prefix;
     let (batch_effects, delta_cells) = delta_outputs(inputs);
+    let (batch_fold, profiles_divided_by) = fold_outputs(inputs);
 
     let levels = vec![final_level_info(prefix, 0)];
 
@@ -271,6 +314,7 @@ pub fn create_cage_metadata(
         cell_level: false,
         graph: Some(inputs.graph.clone()),
         splice,
+        batch_fold_placement: None,
         outputs: OutputFiles {
             coord_pairs: Some(format!("{prefix}.coord_pairs.parquet")),
             coord_columns: coord_columns_field(inputs.coord_columns),
@@ -282,6 +326,8 @@ pub fn create_cage_metadata(
             scores: Some(format!("{prefix}.scores.parquet")),
             batch_effects,
             delta_cells,
+            batch_fold,
+            profiles_divided_by,
             cell_embedding: Some(format!("{prefix}.cell_embedding.parquet")),
             pair_encoder: Some(format!("{prefix}.pair_encoder.safetensors")),
             pb_pair_embedding: Some(crate::util::parquet_io::pb_pair_embedding_path(prefix)),
@@ -336,6 +382,7 @@ pub fn create_prop_metadata(
         n_communities: Some(n_clusters),
         cell_level: false,
         splice: None,
+        batch_fold_placement: None,
         outputs: OutputFiles {
             coord_pairs: coord_pair_file.map(|s| s.to_string()),
             propensity: Some(format!("{prefix}.propensity.parquet")),

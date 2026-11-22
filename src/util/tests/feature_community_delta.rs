@@ -301,6 +301,20 @@ fn a_cage_query_dictionary_is_adjusted_as_the_models() {
     argv.extend_from_slice(&["-o", &model]);
     fit_cage(&argv);
 
+    // with the fold the fit saved, the query is placed on it (its own tests
+    // pin the division: util::tests::batch_fold)
+    let on_fold = predict(dir.path(), &model, &input, "on_fold");
+    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(
+        &crate::util::metadata::manifest_path(&on_fold),
+    ))
+    .unwrap();
+    assert!(
+        meta.batch_fold_placement
+            .is_some_and(|p| p.placed_cells > 0),
+        "a query of a model with a saved fold is placed on it"
+    );
+    // without one (an older run), on δ: the divided refit below
+    rewrite(&model, |m| m.outputs.batch_fold = None);
     let adjusted = predict(dir.path(), &model, &input, "adjusted");
     let (divided, raw) = against_refits(dir.path(), &adjusted, &data, &coords);
     assert!(divided < 1e-3, "not the divided refit: {divided}");

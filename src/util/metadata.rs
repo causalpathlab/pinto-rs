@@ -63,6 +63,11 @@ pub struct PintoMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub splice: Option<SpliceTrackInfo>,
 
+    /// `pinto apply predict` / `impute`: how the query's cells were placed
+    /// on the model's saved fold. Absent: divided by δ alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_fold_placement: Option<crate::util::batch_fold::BatchFoldPlacement>,
+
     pub outputs: OutputFiles,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -382,6 +387,18 @@ pub struct OutputFiles {
     /// before it was written; their `coord_pairs` carry the labels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta_cells: Option<String>,
+
+    /// The state-aware batch fold the fit wrote beside δ
+    /// ([`crate::util::batch_fold::BatchFoldFiles`]). Absent: it divided by
+    /// δ alone, or predates the fold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_fold: Option<crate::util::batch_fold::BatchFoldFiles>,
+
+    /// What every feature_community was fitted on: counts divided by δ, or
+    /// by each cell's state-aware fold. Absent on runs before it was
+    /// written: `feature_community_batch_adjusted` then means δ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles_divided_by: Option<crate::util::batch_fold::ProfilesDividedBy>,
 
     /// Cosine dictionary-merge artifacts: the merge tree, and its consensus
     /// cut when `--merge-cut` was given. Absent when the merge did not run.

@@ -104,8 +104,17 @@ pair weights by the pair fold. Their dictionaries and
 and the spatial baselines (and their `-pb` forms) divide by the cell fold.
 A run falls back to δ alone, with a log line, under `--cnv-clones` or when
 the collapse's groups do not cover the cells; it never fails for want of
-spanning batches. `pinto apply predict` and `pinto apply impute` divide by δ
-alone for now: placing query cells and pairs on the fold is still open.
+spanning batches. A fit writes its cell fold beside δ
+(`{out}.batch_fold_cells.parquet`, `{out}.batch_fold_cell_nodes.parquet`, and
+`{out}.batch_fold_link_states.parquet` under `link`), recorded in its manifest.
+`pinto apply predict` of a cage run places each query cell of a batch the model
+knows on the node whose composition explains it best (its counts summed with
+up to 4 spatial neighbours); that node's fold divides the counts its
+feature-community profiles are summarised from, while its encoder, trained on
+δ-divided rows, still reads δ. `pinto apply impute` divides the run's own
+reference cells by the fold of the node the fit left each in. A batch new to the model, a cell with no read, and a run that
+saved no fold keep δ. lc and dsvd keep δ in predict's held-out scoring and in
+impute for now.
 
 lc's fine Gibbs and greedy steps group the edges by connected component and
 split a component of at least 512 edges into near-equal blocks of at least
@@ -265,8 +274,8 @@ own batch effects; only a new batch is estimated on the query. `pinto apply impu
 reference cells of a cage run by the run's batch effects before pooling
 them, and an lc or dsvd run's too when its manifest marks the profiles
 batch-adjusted (every run with batch effects); an older model's raw-count
-profiles meet raw counts. Both divide by δ, not by the state-aware fold the
-profiles were fitted under (see above).
+profiles meet raw counts. A cage run's reference cells are divided by its saved
+fold (see above); an lc or dsvd run's by δ.
 
 ### `lra`: ligand-receptor analysis
 
