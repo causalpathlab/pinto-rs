@@ -157,7 +157,7 @@ pub enum FoldWritten {
 
 impl FoldWritten {
     /// What a fit with these folds wrote ([`write_fold_tables`]).
-    pub fn of(cells: Option<&CellFold>, pairs: Option<&PairFold>) -> Self {
+    fn of(cells: Option<&CellFold>, pairs: Option<&PairFold>) -> Self {
         match (cells, pairs.and_then(|p| p.link_states.as_ref())) {
             (None, _) => Self::None,
             (Some(_), None) => Self::Cells,
@@ -188,7 +188,9 @@ pub struct BatchFoldFiles {
     pub cell_nodes: String,
     /// feature × columns: `leftover:s{state}:{batch}`, each link state's log
     /// fold over the cell-predicted fold, then `composition:s{state}`.
-    /// Absent under `--pair-fold-states endpoint`.
+    /// Absent under `--pair-fold-states endpoint`. Not read by predict or
+    /// impute (they divide cells); kept for stage 2, which conditions on
+    /// each pair's link state, and for inspection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_states: Option<String>,
 }
@@ -514,7 +516,12 @@ pub fn estimate_pair_batch_fold(
     Ok(PairFold {
         fold: table,
         endpoint_cols,
-        link_states: fold.link_states,
+        link_states: match fold.states {
+            data_beans::alg::collapse_data::state_aware_batch_fold::PairStateModel::LinkStates(
+                d,
+            ) => Some(d),
+            _ => None,
+        },
     })
 }
 

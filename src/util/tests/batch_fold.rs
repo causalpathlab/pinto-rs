@@ -149,7 +149,12 @@ fn placement_neighbours_are_the_nearest_spatial_ones_in_the_batch() {
         EDGE_KIND_EXPRESSION,
     ];
     let batch = [0u32, 0, 0, 0, 0, 1, 0];
-    let n = placement_neighbours(&pairs, Some(&kind), &coords, &batch);
+    let graph = crate::predict::fold::PlacementGraph {
+        pairs: &pairs,
+        edge_kind: Some(&kind),
+        coordinates: &coords,
+    };
+    let n = placement_neighbours(&graph, &batch);
     assert_eq!(n[0], vec![4, 3, 2, 1]);
     assert_eq!(n[1], vec![0]);
     assert!(n[5].is_empty() && n[6].is_empty());

@@ -192,6 +192,8 @@ pub struct SrtPreprocessed {
     /// Each pair of [`Self::graph`]'s edges' own fold, in edge order, with
     /// [`BatchFoldKind::Pairs`] and a δ.
     pub pair_fold: Option<crate::util::batch_fold::PairFold>,
+    /// The fold tables written beside δ (only for [`BatchFoldKind::Pairs`]).
+    pub fold_written: crate::util::batch_fold::FoldWritten,
     /// Expression mode's base graph was built on the batch-corrected
     /// projection, for the manifest's
     /// [`crate::util::metadata::GraphParams::base_batch_corrected`].
@@ -844,18 +846,20 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     };
     // beside δ, for predict and impute ([`crate::util::batch_fold::BatchFoldFiles`]);
     // only the link-based methods (the pair fold) record and read them
-    if matches!(cfg.batch_fold, BatchFoldKind::Pairs(_)) {
-        crate::util::batch_fold::write_fold_tables(
+    let fold_written = match cfg.batch_fold {
+        BatchFoldKind::Pairs(_) => crate::util::batch_fold::write_fold_tables(
             &c.out,
             &data_vec.row_names()?,
             &data_vec.column_names()?,
             &batch_labels,
             cell_fold.as_ref(),
             pair_fold.as_ref(),
-        )?;
-    }
+        )?,
+        _ => crate::util::batch_fold::FoldWritten::None,
+    };
 
     Ok(SrtPreprocessed {
+        fold_written,
         cell_fold,
         pair_fold,
         data_vec,

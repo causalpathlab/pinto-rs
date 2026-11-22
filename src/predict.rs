@@ -666,29 +666,36 @@ pub fn predict_cage(
     let estimate = estimate
         .map(|e| e.into_delta().map(|d| d.on_batches(&query_batches)))
         .transpose()?;
-    let batch_effects = model_delta.as_ref().and_then(|(model, path)| {
-        let matched = delta::match_batches(&query_batches, c, &model.batches, &naming);
-        delta::query_delta(
-            (model, path),
-            &matched,
-            &rows,
-            &query_batches,
-            estimate.as_ref(),
-        )
-    });
+    // each query batch's model batch, when the model has it
+    let matched = model_delta
+        .as_ref()
+        .map(|(model, _)| delta::match_batches(&query_batches, c, &model.batches, &naming));
+    let batch_effects =
+        model_delta
+            .as_ref()
+            .zip(matched.as_ref())
+            .and_then(|((model, path), matched)| {
+                delta::query_delta(
+                    (model, path),
+                    matched,
+                    &rows,
+                    &query_batches,
+                    estimate.as_ref(),
+                )
+            });
     if let Some(d) = &batch_effects {
         d.write(&format!("{}.delta.parquet", c.out))?;
     }
     // The model's saved fold, when it has one: each query cell of a batch it
     // knows divided by a placed node's fold, as its own cells were; the rest
     // by the δ above ([`fold::query_fold_divisor`]).
-    let saved_fold = match model_adjusted {
-        true => crate::util::batch_fold::SavedCellFold::read(run)?,
-        false => None,
+    let saved_fold = if model_adjusted {
+        crate::util::batch_fold::SavedCellFold::read(run)?
+    } else {
+        None
     };
-    let fold_divisor = match (&saved_fold, &batch_effects, &model_delta) {
-        (Some(saved), Some(d), Some((model, _))) => {
-            let matched = delta::match_batches(&query_batches, c, &model.batches, &naming);
+    let fold_divisor = match (&saved_fold, &batch_effects, &model_delta, &matched) {
+        (Some(saved), Some(d), Some((model, _)), Some(matched)) => {
             let model_label: Vec<Option<Box<str>>> = matched
                 .iter()
                 .map(|m| m.map(|m| model.batches[m].clone()))
@@ -704,12 +711,11 @@ pub fn predict_cage(
                 },
                 &fold::QueryCells {
                     names: &cell_names,
-                    neighbours: Some(&fold::placement_neighbours(
-                        &fine_edges,
-                        srt_cell_pairs.edge_kind.as_deref(),
-                        &coordinates,
-                        &batch_of_cell,
-                    )),
+                    graph: Some(fold::PlacementGraph {
+                        pairs: &fine_edges,
+                        edge_kind: srt_cell_pairs.edge_kind.as_deref(),
+                        coordinates: &coordinates,
+                    }),
                 },
             )?)
         }
@@ -860,7 +866,7 @@ pub fn predict_cage(
         fold_divisor
             .as_ref()
             .map(|f| crate::util::batch_fold::BatchFoldPlacement {
-                neighbours: fold::PLACEMENT_NEIGHBOURS,
+                neighbours: f.neighbours,
                 placed_cells: f.n_placed,
                 fitted_cells: f.n_fitted,
                 cells: n_cells,

@@ -496,13 +496,7 @@ impl RunDelta {
     /// Each of `rows`' row in this δ, by name; `None` for a row the run did
     /// not read.
     pub fn row_index(&self, rows: &[Box<str>]) -> Vec<Option<usize>> {
-        let of: HashMap<&str, usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (r.as_ref(), i))
-            .collect();
-        rows.iter().map(|r| of.get(r.as_ref()).copied()).collect()
+        index_by_name(&self.rows, rows)
     }
 
     /// The mean alone on another matrix's `rows`, matched by name; a row
@@ -745,6 +739,16 @@ pub fn batch_ids(batch_membership: &[Box<str>], labels: &[Box<str>]) -> Vec<u32>
                 .expect("a cell's batch is one of the sorted labels") as u32
         })
         .collect()
+}
+
+/// Each of `rows`' position in `names`, by name; `None` for a row not there.
+pub fn index_by_name(names: &[Box<str>], rows: &[Box<str>]) -> Vec<Option<usize>> {
+    let of: HashMap<&str, usize> = names
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.as_ref(), i))
+        .collect();
+    rows.iter().map(|r| of.get(r.as_ref()).copied()).collect()
 }
 
 /// Divide each count of `x` by its row's δ in its column's batch, a plain

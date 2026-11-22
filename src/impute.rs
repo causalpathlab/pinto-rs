@@ -213,8 +213,8 @@ fn reference_divide(
         .enumerate()
         .map(|(j, b)| (b.as_ref(), j))
         .collect();
-    let batch_of_cell: Vec<Option<usize>> = ref_data
-        .column_names()?
+    let names = ref_data.column_names()?;
+    let batch_of_cell: Vec<Option<usize>> = names
         .iter()
         .map(|cell| {
             batch_of
@@ -225,12 +225,12 @@ fn reference_divide(
     let model_delta = delta.mean_on_rows(ref_rows);
     // a cage run's own cells, divided by the fold of the node the fit left
     // each in, as its encoder's training rows were; lc / dsvd stay on δ
-    let saved = match with_fold {
-        true => crate::util::batch_fold::SavedCellFold::read(run)?,
-        false => None,
+    let saved = if with_fold {
+        crate::util::batch_fold::SavedCellFold::read(run)?
+    } else {
+        None
     };
     if let Some(saved) = saved {
-        let names = ref_data.column_names()?;
         let labels: Vec<Box<str>> = names
             .iter()
             .map(|cell| batch_of.get(cell).cloned().unwrap_or_default())

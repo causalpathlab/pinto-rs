@@ -172,6 +172,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
 
     // 1-3. Load + KNN + batch effects (no Fisher weights).
     let SrtPreprocessed {
+        fold_written,
         cell_fold,
         pair_fold,
         data_vec,
@@ -207,8 +208,6 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         ),
         feature_kind: None,
     })?;
-    let fold_written =
-        crate::util::batch_fold::FoldWritten::of(cell_fold.as_ref(), pair_fold.as_ref());
     // Only the mean divides; the full posterior is the file preprocessing wrote.
     let batch_db = batch_db
         .map(crate::util::batch_effects::BatchPosterior::into_mean)

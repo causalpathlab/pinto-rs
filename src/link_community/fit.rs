@@ -72,6 +72,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     // 1-3. Load + KNN + batch effects + feature weights //
     ////////////////////////////////////////////////////
     let SrtPreprocessed {
+        fold_written,
         cell_fold,
         pair_fold,
         data_vec,
@@ -111,8 +112,6 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
             args.pair_fold.pair_fold_states,
         ),
     })?;
-    let fold_written =
-        crate::util::batch_fold::FoldWritten::of(cell_fold.as_ref(), pair_fold.as_ref());
     // Only the mean divides; the full posterior is the file preprocessing wrote.
     let batch_effects = batch_effects
         .map(crate::util::batch_effects::BatchPosterior::into_mean)

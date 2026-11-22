@@ -17,8 +17,10 @@
 //! today (the model's δ, or the query's own estimate moved into its frame);
 //! so do a placed cell's rows the fold has no feature for.
 
+use crate::util::batch_effects::index_by_name;
 use crate::util::batch_fold::SavedCellFold;
 use crate::util::common::*;
+use rayon::prelude::*;
 
 /// Spatial neighbours a query cell's counts are summed with before it is
 /// placed. On a held-out section (sim donor-confounded, lc fit on the other
@@ -26,15 +28,21 @@ use crate::util::common::*;
 /// with 4 neighbours, 0.699 with 12; 4 smooths less across domain edges.
 pub(crate) const PLACEMENT_NEIGHBOURS: usize = 4;
 
+/// Query cells placed per block (read together with their neighbours; the
+/// blocks run in parallel).
+const PLACEMENT_BLOCK: usize = 10_000;
+
 /// What divides each query cell: `table` (the query's rows × columns,
 /// linear) and each cell's column of it.
 pub(crate) struct QueryFoldDivisor {
     pub table: Mat,
     pub col_of_cell: Vec<u32>,
-    /// Cells divided by a placed node's fold (the rest keep δ).
+    /// Cells divided by a node's fold (the rest keep δ).
     pub n_placed: usize,
     /// Of those, cells the fit itself placed (by name), not placed again.
     pub n_fitted: usize,
+    /// Neighbours each placed cell's counts were summed with (0: its own).
+    pub neighbours: usize,
 }
 
 /// The query's batches as the model's fold names them.
@@ -46,37 +54,46 @@ pub(crate) struct QueryBatches<'a> {
     pub model_label: &'a [Option<Box<str>>],
 }
 
+/// The query's pairs, what a cell's placement neighbours are drawn from
+/// ([`placement_neighbours`]).
+pub(crate) struct PlacementGraph<'a> {
+    pub pairs: &'a [(u32, u32)],
+    /// Each pair's kind (`None`: every pair spatial).
+    pub edge_kind: Option<&'a [i32]>,
+    /// Cells × dims.
+    pub coordinates: &'a Mat,
+}
+
 /// The query cells: their names (a cell the fit placed keeps its node) and
-/// each one's spatial neighbours to sum before placing it
-/// ([`placement_neighbours`]; `None`: each on its own counts).
+/// the graph its neighbours are summed from before it is placed (`None`:
+/// each on its own counts).
 pub(crate) struct QueryCells<'a> {
     pub names: &'a [Box<str>],
-    pub neighbours: Option<&'a [Vec<usize>]>,
+    pub graph: Option<PlacementGraph<'a>>,
 }
 
 /// Each cell's nearest neighbours to sum before it is placed: up to
-/// [`PLACEMENT_NEIGHBOURS`] of its spatial pairs (`edge_kind`: none, or
-/// spatial), in its own query batch, nearest first by `coordinates` (cells ×
-/// dims).
+/// [`PLACEMENT_NEIGHBOURS`] of its spatial pairs, in its own query batch,
+/// nearest first.
 pub(crate) fn placement_neighbours(
-    pairs: &[(u32, u32)],
-    edge_kind: Option<&[i32]>,
-    coordinates: &Mat,
+    graph: &PlacementGraph<'_>,
     batch_of_cell: &[u32],
 ) -> Vec<Vec<usize>> {
     let n = batch_of_cell.len();
-    let dist = |u: usize, v: usize| (coordinates.row(u) - coordinates.row(v)).norm_squared();
+    let xy = graph.coordinates;
     let mut cand: Vec<Vec<(f32, usize)>> = vec![Vec::new(); n];
-    for (e, &(u, v)) in pairs.iter().enumerate() {
-        let spatial = edge_kind.is_none_or(|k| k[e] == crate::util::cell_pairs::EDGE_KIND_SPATIAL);
+    for (e, &(u, v)) in graph.pairs.iter().enumerate() {
+        let spatial = graph
+            .edge_kind
+            .is_none_or(|k| k[e] == crate::util::cell_pairs::EDGE_KIND_SPATIAL);
         let (u, v) = (u as usize, v as usize);
         if spatial && u != v && batch_of_cell[u] == batch_of_cell[v] {
-            let d = dist(u, v);
+            let d = (xy.row(u) - xy.row(v)).norm_squared();
             cand[u].push((d, v));
             cand[v].push((d, u));
         }
     }
-    cand.into_iter()
+    cand.into_par_iter()
         .map(|mut c| {
             c.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
             c.dedup_by_key(|x| x.1);
@@ -111,16 +128,26 @@ fn fold_table_with_delta(
     })
 }
 
-/// Each row's feature in the fold.
-fn fold_rows(saved: &SavedCellFold, rows: &[Box<str>]) -> Vec<Option<usize>> {
-    let feature_of: HashMap<&str, usize> = saved
-        .features
+/// A cell's column of [`fold_table_with_delta`]'s table: its node's fold in
+/// its fold batch, else its δ column; `None` without either.
+fn cell_column(
+    saved: &SavedCellFold,
+    node: Option<usize>,
+    fold_batch: Option<usize>,
+    delta_col: Option<usize>,
+) -> Option<usize> {
+    match (node, fold_batch) {
+        (Some(k), Some(b)) => Some(k * saved.batches.len() + b),
+        _ => delta_col.map(|q| saved.log_fold.ncols() + q),
+    }
+}
+
+/// Each label's position in `labels`.
+fn position_of(labels: &[Box<str>]) -> HashMap<&str, usize> {
+    labels
         .iter()
         .enumerate()
-        .map(|(g, f)| (f.as_ref(), g))
-        .collect();
-    rows.iter()
-        .map(|r| feature_of.get(r.as_ref()).copied())
+        .map(|(i, l)| (l.as_ref(), i))
         .collect()
 }
 
@@ -128,7 +155,7 @@ fn fold_rows(saved: &SavedCellFold, rows: &[Box<str>]) -> Vec<Option<usize>> {
 /// cell of a batch the model knows (the fit's own node for a cell it placed,
 /// else one placed by composition), else the cell's column of `delta` (rows
 /// × query batches, linear; the δ predict divides by without a fold). The
-/// query is read block by block, each block with its cells' neighbours.
+/// cells to place are read in blocks, each with its cells' neighbours.
 pub(crate) fn query_fold_divisor(
     saved: &SavedCellFold,
     data: &SparseIoVec,
@@ -138,21 +165,20 @@ pub(crate) fn query_fold_divisor(
     cells: &QueryCells<'_>,
 ) -> anyhow::Result<QueryFoldDivisor> {
     let n_cells = data.num_columns();
-    let nb = saved.batches.len();
     anyhow::ensure!(
         batches.of_cell.len() == n_cells
             && cells.names.len() == n_cells
-            && cells.neighbours.is_none_or(|n| n.len() == n_cells)
             && delta.nrows() == rows.len(),
-        "query fold: one batch, name and neighbour list per cell, one δ row per data row"
+        "query fold: one batch and name per cell, one δ row per data row"
     );
-    let fold_row = fold_rows(saved, rows);
+    let fold_row = index_by_name(&saved.features, rows);
+    let saved_batch = position_of(&saved.batches);
     let fold_batch: Vec<Option<usize>> = batches
         .model_label
         .iter()
         .map(|l| {
             l.as_ref()
-                .and_then(|l| saved.batches.iter().position(|b| b == l))
+                .and_then(|l| saved_batch.get(l.as_ref()).copied())
         })
         .collect();
     let batch_of_cell: Vec<Option<usize>> = batches
@@ -163,106 +189,72 @@ pub(crate) fn query_fold_divisor(
 
     // a cell the fit placed keeps the fit's node (or δ, when the fit kept δ)
     let mut node: Vec<Option<usize>> = vec![None; n_cells];
-    let mut to_place: Vec<bool> = vec![false; n_cells];
-    let mut n_fitted = 0;
+    let mut to_place: Vec<usize> = Vec::new();
     for c in 0..n_cells {
         if batch_of_cell[c].is_none() {
             continue;
         }
         match saved.node_of_cell.get(&cells.names[c]) {
-            Some(&k) => {
-                node[c] = k;
-                n_fitted += usize::from(k.is_some());
-            }
-            None => to_place[c] = true,
+            Some(&k) => node[c] = k,
+            None => to_place.push(c),
         }
     }
+    let n_fitted = node.iter().filter(|k| k.is_some()).count();
 
-    // the rest placed by composition, block by block, each cell on its
-    // counts (a new batch's divided by its δ) summed with its neighbours'
-    let cell_counts = |c: usize, col: nalgebra_sparse::csc::CscCol<'_, f32>| {
-        let qb = batches.of_cell[c] as usize;
-        let known = fold_batch[qb].is_some();
-        col.row_indices()
-            .iter()
-            .zip(col.values())
-            .filter_map(|(&r, &x)| {
-                let g = fold_row[r]?;
-                Some((
-                    g,
-                    if known {
-                        x
-                    } else {
-                        x / delta[(r, qb)].max(1e-8)
-                    },
-                ))
-            })
-            .collect::<Vec<(usize, f32)>>()
+    // the rest placed by composition, each cell on its counts (a new
+    // batch's divided by its δ) summed with its neighbours'
+    let neighbours = match (&cells.graph, to_place.is_empty()) {
+        (Some(g), false) => Some(placement_neighbours(g, batches.of_cell)),
+        _ => None,
     };
-    for (lb, ub) in
-        legume_numeric::matrix::utils::generate_minibatch_intervals(n_cells, rows.len(), None)
-    {
-        let placing: Vec<usize> = (lb..ub).filter(|&c| to_place[c]).collect();
-        if placing.is_empty() {
-            continue;
-        }
-        let mut read: Vec<usize> = placing.clone();
-        if let Some(nbrs) = cells.neighbours {
-            read.extend(placing.iter().flat_map(|&c| nbrs[c].iter().copied()));
-        }
-        read.sort_unstable();
-        read.dedup();
-        let block = data.read_columns_csc(read.iter().copied())?;
-        let counts_of: HashMap<usize, Vec<(usize, f32)>> = read
-            .iter()
-            .zip(block.col_iter())
-            .map(|(&c, col)| (c, cell_counts(c, col)))
-            .collect();
-        let summed: Vec<Vec<(usize, f32)>> = placing
-            .iter()
-            .map(|&c| {
-                let nbrs = cells.neighbours.map_or(&[][..], |n| &n[c][..]);
-                summed_counts(std::iter::once(c).chain(nbrs.iter().copied()), &counts_of)
-            })
-            .collect();
-        let batch: Vec<Option<usize>> = placing.iter().map(|&c| batch_of_cell[c]).collect();
-        let placed = data_beans::alg::collapse_data::state_aware_batch_fold::place_by_composition(
-            &summed,
-            &batch,
-            &saved.log_mean_composition,
-            &saved.log_fold,
-            nb,
-        )?;
-        for (&c, k) in placing.iter().zip(placed) {
-            node[c] = k;
-        }
+    let placer = data_beans::alg::collapse_data::state_aware_batch_fold::CompositionPlacer::new(
+        &saved.log_mean_composition,
+        &saved.log_fold,
+        saved.batches.len(),
+    )?;
+    let read_counts = CountsOnFold {
+        fold_row: &fold_row,
+        n_features: saved.features.len(),
+        delta,
+        of_cell: batches.of_cell,
+        fold_batch: &fold_batch,
+    };
+    let placed: Vec<Vec<(usize, Option<usize>)>> = to_place
+        .par_chunks(PLACEMENT_BLOCK)
+        .map(|placing| -> anyhow::Result<_> {
+            let summed = read_counts.summed(data, placing, neighbours.as_deref())?;
+            let batch: Vec<Option<usize>> = placing.iter().map(|&c| batch_of_cell[c]).collect();
+            let k = placer.place(&summed, &batch)?;
+            Ok(placing.iter().copied().zip(k).collect())
+        })
+        .collect::<anyhow::Result<_>>()?;
+    for (c, k) in placed.into_iter().flatten() {
+        node[c] = k;
     }
 
     // a fold batch's δ column: the query batch the model names so
-    let delta_col_of_fold_batch: Vec<Option<usize>> = (0..nb)
+    let delta_col_of_fold_batch: Vec<Option<usize>> = (0..saved.batches.len())
         .map(|b| fold_batch.iter().position(|&f| f == Some(b)))
         .collect();
     let table = fold_table_with_delta(saved, &fold_row, delta, &delta_col_of_fold_batch);
-    let n_fold = saved.log_fold.ncols();
-    let mut n_placed = 0;
-    let col_of_cell = (0..n_cells)
-        .map(|c| match (node[c], batch_of_cell[c]) {
-            (Some(k), Some(b)) => {
-                n_placed += 1;
-                (k * nb + b) as u32
-            }
-            _ => (n_fold + batches.of_cell[c] as usize) as u32,
+    let col_of_cell: Vec<u32> = (0..n_cells)
+        .map(|c| {
+            let qb = batches.of_cell[c] as usize;
+            cell_column(saved, node[c], batch_of_cell[c], Some(qb)).expect("a δ column") as u32
         })
         .collect();
-    let mode = if cells.neighbours.is_some() {
-        format!("each with up to {PLACEMENT_NEIGHBOURS} spatial neighbours in its batch")
+    let n_fold = saved.log_fold.ncols() as u32;
+    let n_placed = col_of_cell.iter().filter(|&&c| c < n_fold).count();
+    let n_neighbours = if neighbours.is_some() {
+        PLACEMENT_NEIGHBOURS
     } else {
-        "each on its own counts".to_string()
+        0
     };
     info!(
         "Batch fold: {n_placed} of {n_cells} query cells on the model's {} nodes \
-         ({n_fitted} where the fit placed them, the rest placed {mode}); \
-         the others (a batch new to the model, no read, or kept on δ by the fit) keep δ",
+         ({n_fitted} where the fit placed them, the rest placed with up to {n_neighbours} \
+         spatial neighbours in their batch); the others (a batch new to the model, no read, \
+         or kept on δ by the fit) keep δ",
         saved.log_mean_composition.ncols()
     );
     Ok(QueryFoldDivisor {
@@ -270,25 +262,68 @@ pub(crate) fn query_fold_divisor(
         col_of_cell,
         n_placed,
         n_fitted,
+        neighbours: n_neighbours,
     })
 }
 
-/// The counts of `cells` (each `counts_of` one), summed per feature.
-fn summed_counts(
-    cells: impl Iterator<Item = usize>,
-    counts_of: &HashMap<usize, Vec<(usize, f32)>>,
-) -> Vec<(usize, f32)> {
-    let mut all: Vec<(usize, f32)> = cells.flat_map(|c| counts_of[&c].iter().copied()).collect();
-    all.sort_unstable_by_key(|&(g, _)| g);
-    all.dedup_by(|next, kept| {
-        if next.0 == kept.0 {
-            kept.1 += next.1;
-            true
-        } else {
-            false
-        }
-    });
-    all
+/// Reads query cells' counts on the fold's features: a cell of a batch the
+/// model knows as read, one of a new batch divided by its δ (a non-positive
+/// δ leaves the count, as [`crate::util::batch_effects::divide_columns`]).
+struct CountsOnFold<'a> {
+    fold_row: &'a [Option<usize>],
+    n_features: usize,
+    delta: &'a Mat,
+    of_cell: &'a [u32],
+    fold_batch: &'a [Option<usize>],
+}
+
+impl CountsOnFold<'_> {
+    /// Each of `placing`'s counts summed with its `neighbours`' (`None`: its
+    /// own alone), the cells and their neighbours read once.
+    fn summed(
+        &self,
+        data: &SparseIoVec,
+        placing: &[usize],
+        neighbours: Option<&[Vec<usize>]>,
+    ) -> anyhow::Result<Vec<Vec<(usize, f32)>>> {
+        let no_neighbours: &[usize] = &[];
+        let cells_of = |c: usize| {
+            std::iter::once(c).chain(neighbours.map_or(no_neighbours, |n| &n[c]).iter().copied())
+        };
+        let mut read: Vec<usize> = placing.iter().flat_map(|&c| cells_of(c)).collect();
+        read.sort_unstable();
+        read.dedup();
+        let block = data.read_columns_csc(read.iter().copied())?;
+        let mut sum = vec![0f32; self.n_features];
+        let mut touched: Vec<usize> = Vec::new();
+        Ok(placing
+            .iter()
+            .map(|&c| {
+                for u in cells_of(c) {
+                    let j = read.binary_search(&u).expect("read");
+                    let qb = self.of_cell[u] as usize;
+                    let known = self.fold_batch[qb].is_some();
+                    let col = block.col(j);
+                    for (&r, &x) in col.row_indices().iter().zip(col.values()) {
+                        let Some(g) = self.fold_row[r] else { continue };
+                        let d = self.delta[(r, qb)];
+                        let x = if known || d <= 0.0 { x } else { x / d };
+                        if sum[g] == 0.0 {
+                            touched.push(g);
+                        }
+                        sum[g] += x;
+                    }
+                }
+                touched.sort_unstable();
+                let out = touched.iter().map(|&g| (g, sum[g])).collect();
+                for &g in &touched {
+                    sum[g] = 0.0;
+                }
+                touched.clear();
+                out
+            })
+            .collect())
+    }
 }
 
 /// What divides the model's own cells (impute's reference): the fold column
@@ -303,16 +338,16 @@ pub(crate) fn fitted_cells_fold_divisor(
     batch_label_of_cell: &[Box<str>],
     (model_delta, model_delta_batches): (&Mat, &[Box<str>]),
 ) -> (Mat, Vec<Option<usize>>) {
-    let nb = saved.batches.len();
-    let n_fold = saved.log_fold.ncols();
+    let saved_batch = position_of(&saved.batches);
+    let delta_batch = position_of(model_delta_batches);
     let delta_col_of_fold_batch: Vec<Option<usize>> = saved
         .batches
         .iter()
-        .map(|b| model_delta_batches.iter().position(|d| d == b))
+        .map(|b| delta_batch.get(b.as_ref()).copied())
         .collect();
     let table = fold_table_with_delta(
         saved,
-        &fold_rows(saved, rows),
+        &index_by_name(&saved.features, rows),
         model_delta,
         &delta_col_of_fold_batch,
     );
@@ -320,15 +355,12 @@ pub(crate) fn fitted_cells_fold_divisor(
         .iter()
         .zip(batch_label_of_cell)
         .map(|(cell, label)| {
-            let node = saved.node_of_cell.get(cell).copied().flatten();
-            let fold_b = saved.batches.iter().position(|b| b == label);
-            match (node, fold_b) {
-                (Some(k), Some(b)) => Some(k * nb + b),
-                _ => model_delta_batches
-                    .iter()
-                    .position(|b| b == label)
-                    .map(|b| n_fold + b),
-            }
+            cell_column(
+                saved,
+                saved.node_of_cell.get(cell).copied().flatten(),
+                saved_batch.get(label.as_ref()).copied(),
+                delta_batch.get(label.as_ref()).copied(),
+            )
         })
         .collect();
     (table, col)
