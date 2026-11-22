@@ -15,15 +15,12 @@
 
 use crate::util::batch_effects::BatchDivisor;
 use crate::util::common::*;
-use data_beans::alg::cell_pairs::split_reads_over_pair_units;
-use data_beans::alg::collapse_data::group_fold::{
-    estimate_pair_fold, estimate_sample_fold, GroupFold, GroupFoldParams, SampleFold,
+use data_beans::alg::collapse_data::state_aware_batch_fold::{
+    collapse_cell_pairs_and_estimate_state_aware_batch_fold,
+    estimate_state_aware_batch_fold_over_samples, CollapsePseudobulks, SampleBatchFold,
+    StateAwareBatchFold, StateAwareBatchFoldParams,
 };
-use data_beans::alg::collapse_data::*;
-use data_beans::alg::random_projection::*;
-use data_beans::sparse_io::{create_sparse_from_triplets_owned, SparseIoBackend};
-use legume_numeric::param::traits::Inference;
-use std::sync::Arc;
+use data_beans::alg::collapse_data::MultilevelParams;
 
 /// A fold per unit: `fold[:, col_of_unit[u]]` multiplies unit `u`'s rates.
 pub struct FoldTable {
@@ -34,7 +31,7 @@ pub struct FoldTable {
 }
 
 impl FoldTable {
-    fn of(gf: &GroupFold, batch_of_unit: impl Fn(usize) -> usize) -> Self {
+    fn of(gf: &StateAwareBatchFold, batch_of_unit: impl Fn(usize) -> usize) -> Self {
         let nb = gf.n_batches;
         let n_node_cols = gf.n_nodes * nb;
         let mut fold = Mat::zeros(gf.log_fold.nrows(), n_node_cols + nb);
@@ -74,7 +71,14 @@ impl FoldTable {
 /// which the pair fold builds on.
 pub struct CellFold {
     pub table: FoldTable,
-    fit: SampleFold,
+    fit: SampleBatchFold,
+    batch_of_cell: Vec<usize>,
+}
+
+impl CellFold {
+    fn batch_of_cell(&self) -> &[usize] {
+        &self.batch_of_cell
+    }
 }
 
 /// Each listed pair's own fold (graph kind), in the order of the pairs it was
@@ -109,117 +113,73 @@ impl PairFold {
 }
 
 /// The fold's settings: data-beans' defaults; no user-facing knob.
-fn params() -> GroupFoldParams {
-    GroupFoldParams::default()
+fn params() -> StateAwareBatchFoldParams {
+    StateAwareBatchFoldParams::default()
 }
 
-/// Each cell's fold over the collapse that gave δ: its coarsest groups
-/// (`coarse_groups`), δ's mean (`delta`, `[rows × batches]`) and the
-/// batch-corrected projection it collapsed on (`proj`, `[dims × cells]`).
+/// Each cell's fold over the collapse that gave δ: its finest groups (the
+/// pseudobulks matched) and coarsest groups (the tree's leaves), δ's mean
+/// (`delta`, `[rows × batches]`) and the batch-corrected projection it
+/// collapsed on (`proj`, `[dims × cells]`).
 pub fn estimate_cell_fold(
     data_vec: &SparseIoVec,
     batch_of_cell: &[u32],
     delta: &Mat,
-    coarse_groups: &[usize],
+    groups: &crate::util::batch_effects::CollapseGroups,
     proj: &Mat,
 ) -> anyhow::Result<CellFold> {
     let batch: Vec<usize> = batch_of_cell.iter().map(|&b| b as usize).collect();
     let log_delta = delta.map(|v| v.max(1e-8).ln());
-    let fit = estimate_sample_fold(data_vec, &batch, coarse_groups, &log_delta, proj, &params())?;
+    let fit = estimate_state_aware_batch_fold_over_samples(
+        data_vec,
+        &batch,
+        &CollapsePseudobulks {
+            finest: &groups.finest,
+            coarsest: &groups.coarsest,
+        },
+        &log_delta,
+        proj,
+        &params(),
+    )?;
     let table = FoldTable::of(&fit.fold, |c| batch[c]);
-    Ok(CellFold { table, fit })
+    Ok(CellFold {
+        table,
+        fit,
+        batch_of_cell: batch,
+    })
 }
 
-/// Each pair's fold (graph kind): the reads of every cell split once over its
-/// pairs and a self-loop, those pair units collapsed for their own δ (the
-/// self-loops a stratum of their own), then the fold per pair node placed by
-/// the pair's endpoints in the cells' tree (`cells`).
-///
-/// `pairs` are cell indices into `data_vec`; a pair's batch is its first
-/// endpoint's. The pair units live in a temporary file for the estimate only.
+/// Each pair's fold (cell-pair kind), by data-beans'
+/// [`collapse_cell_pairs_and_estimate_state_aware_batch_fold`]: every cell's
+/// reads split once over its pairs and a self-loop, those pair units
+/// collapsed for their own δ, each pair placed on the cells' tree (`cells`)
+/// by its endpoints. `pairs` are cell indices into `data_vec`.
 pub fn estimate_pair_batch_fold(
     data_vec: &SparseIoVec,
     pairs: &[(usize, usize)],
-    batch_of_cell: &[u32],
-    batch_labels: &[Box<str>],
+    batch_membership: &[Box<str>],
     cells: &CellFold,
     proj_dim: usize,
     num_levels: usize,
 ) -> anyhow::Result<PairFold> {
-    let (n_rows, n_cells, n_pairs) = (data_vec.num_rows(), data_vec.num_columns(), pairs.len());
-    info!("Pair batch fold: splitting reads over {n_pairs} pairs and {n_cells} self-loops");
-    let triplets = split_reads_over_pair_units(data_vec, pairs, None)?;
-    let n_units = n_pairs + n_cells;
-    let nnz = triplets.len();
-    let dir = tempfile::tempdir()?;
-    let path = dir.path().join("pair_units.zarr.zip");
-    let mut backend = create_sparse_from_triplets_owned(
-        triplets,
-        (n_rows, n_units, nnz),
-        Some(path.to_str().expect("utf-8 temporary path")),
-        Some(&SparseIoBackend::Zarr),
-    )?;
-    backend.register_row_names_vec(&data_vec.row_names()?);
-    backend.register_column_names_vec(
-        &(0..n_units)
-            .map(|u| format!("unit{u}").into_boxed_str())
-            .collect::<Vec<_>>(),
-    );
-    let mut units = SparseIoVec::new();
-    units.push(Arc::from(backend), None)?;
-
-    let unit_batch: Vec<u32> = (0..n_units)
-        .map(|u| {
-            if u < n_pairs {
-                batch_of_cell[pairs[u].0]
-            } else {
-                batch_of_cell[u - n_pairs]
-            }
-        })
-        .collect();
-    let unit_label: Vec<Box<str>> = unit_batch
-        .iter()
-        .map(|&b| batch_labels[b as usize].clone())
-        .collect();
-    let strata: Vec<usize> = (0..n_units).map(|u| usize::from(u >= n_pairs)).collect();
-
-    let proj = units.project_columns_with_batch_correction(proj_dim, None, Some(&unit_label))?;
-    let out = collapse_columns_multilevel_with_hierarchy(
-        &mut units,
-        &proj.proj,
-        &unit_label,
-        &MultilevelParams {
-            knn_pb_samples: crate::util::input::BATCH_KNN,
-            sort_dim: proj_dim.min(crate::util::batch_effects::BATCH_SORT_DIM),
-            num_levels,
-            strata: Some(strata),
-            ..MultilevelParams::new(proj.proj.nrows())
-        },
-    )?;
-    let pair_delta = out
-        .levels
-        .first()
-        .and_then(|l| l.delta.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("the pair-unit collapse gave no batch effect"))?
-        .posterior_mean()
-        .map(|v| v.max(1e-8).ln());
-    anyhow::ensure!(
-        pair_delta.ncols() == batch_labels.len(),
-        "pair units span {} of {} batches",
-        pair_delta.ncols(),
-        batch_labels.len()
-    );
-
-    let cell_batch: Vec<usize> = batch_of_cell.iter().map(|&b| b as usize).collect();
-    let fold = estimate_pair_fold(
-        &units,
+    let collapse = MultilevelParams {
+        knn_pb_samples: crate::util::input::BATCH_KNN,
+        sort_dim: proj_dim.min(crate::util::batch_effects::BATCH_SORT_DIM),
+        num_levels,
+        ..MultilevelParams::new(proj_dim)
+    };
+    let fold = collapse_cell_pairs_and_estimate_state_aware_batch_fold(
+        data_vec,
         pairs,
-        &cell_batch,
+        batch_membership,
         &cells.fit,
-        &pair_delta,
+        &collapse,
+        proj_dim,
         &params(),
     )?;
-    let table = FoldTable::of(&fold.fold, |e| cell_batch[pairs[e].0]);
+    let first_cell: Vec<usize> = pairs.iter().map(|&(u, _)| u).collect();
+    let batch_of_cell = cells.batch_of_cell();
+    let table = FoldTable::of(&fold.fold, |e| batch_of_cell[first_cell[e]]);
     Ok(PairFold { table })
 }
 

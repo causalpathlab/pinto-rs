@@ -790,7 +790,8 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         (Some(effects), Some(proj))
             if cfg.batch_fold != BatchFoldKind::None
                 && cfg.batch_effects == BatchEstimate::Fit
-                && effects.coarse_groups.len() == n_cells =>
+                && effects.groups.coarsest.len() == n_cells
+                && effects.groups.finest.len() == n_cells =>
         {
             let posterior = effects.posterior.as_ref().expect("filtered to Some above");
             let delta = legume_numeric::param::traits::Inference::posterior_mean(&posterior.gamma);
@@ -801,7 +802,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
                 &data_vec,
                 &batch_of_cell,
                 delta,
-                &effects.coarse_groups,
+                &effects.groups,
                 &proj.proj,
             )?;
             let pairs = (cfg.batch_fold == BatchFoldKind::Pairs)
@@ -809,8 +810,7 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
                     crate::util::batch_fold::estimate_pair_batch_fold(
                         &data_vec,
                         &graph.edges,
-                        &batch_of_cell,
-                        &batch_labels,
+                        &batch_membership,
                         &cells,
                         c.collapse.proj_dim,
                         c.collapse.num_levels,

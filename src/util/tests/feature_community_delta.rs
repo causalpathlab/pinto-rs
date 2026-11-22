@@ -142,8 +142,9 @@ fn adjusted_in_manifest(prefix: &str) -> bool {
 
 /// `fit` (given its input, output and extra flags) on two sections, the
 /// second folded on a third of the features: with δ the written dictionary
-/// is the divided refit and not the undivided one, and the manifest says
-/// so; under `--ignore-batch` it is the undivided refit.
+/// is batch-adjusted (nearer the δ-divided refit than the undivided one; it
+/// divides by each cell's fold) and the manifest says so; under
+/// `--ignore-batch` it is the undivided refit.
 fn check(fit: &dyn Fn(&[&str])) {
     let dir = tempfile::tempdir().unwrap();
     let (data, coords) = crate::test_support::two_sections(dir.path(), 8);
@@ -165,8 +166,14 @@ fn check(fit: &dyn Fn(&[&str])) {
 
     let adjusted = run("adjusted", &[]);
     let (divided, raw) = against_refits(dir.path(), &adjusted, &data, &coords);
-    assert!(divided < 1e-3, "not the divided refit: {divided}");
-    assert!(raw > 0.1, "the undivided refit too: {raw}");
+    // the dictionary divides by each cell's state-aware fold (δ refined per
+    // node, `util::batch_fold`), which is not written: it is batch-adjusted,
+    // nearer the δ-divided refit than the undivided one, not equal to either
+    assert!(raw > 0.1, "the undivided refit: {raw}");
+    assert!(
+        divided < raw,
+        "not batch-adjusted: δ-divided gap {divided}, undivided {raw}"
+    );
     assert!(adjusted_in_manifest(&adjusted));
 
     let ignored = run("ignored", &["--ignore-batch"]);
