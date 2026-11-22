@@ -107,9 +107,11 @@ the collapse's groups do not cover the cells; it never fails for want of
 spanning batches. A fit writes its cell fold beside δ
 (`{out}.batch_fold_cells.parquet`, `{out}.batch_fold_cell_nodes.parquet`, and
 `{out}.batch_fold_link_states.parquet` under `link`), recorded in its manifest.
-`pinto apply predict` of a cage run places each query cell of a batch the model
-knows on the node whose composition explains it best (its counts summed with
-up to 4 spatial neighbours); that node's fold divides the counts its
+`pinto apply predict` of a cage run keeps the fit's node for a cell the fit saw
+under the same name (several files name cells `barcode@section`, as the fit
+did; one file names them by barcode alone) and places each other query cell of a batch the model knows on the node whose
+composition explains it best (its counts summed with its up to 4 nearest
+spatial neighbours in the same batch); that node's fold divides the counts its
 feature-community profiles are summarised from, while its encoder, trained on
 δ-divided rows, still reads δ. `pinto apply impute` divides the run's own
 reference cells by the fold of the node the fit left each in. A batch new to

@@ -842,15 +842,18 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
             (None, None)
         }
     };
-    // beside δ, for predict and impute ([`crate::util::batch_fold::BatchFoldFiles`])
-    crate::util::batch_fold::write_fold_tables(
-        &c.out,
-        &data_vec.row_names()?,
-        &data_vec.column_names()?,
-        &batch_labels,
-        cell_fold.as_ref(),
-        pair_fold.as_ref(),
-    )?;
+    // beside δ, for predict and impute ([`crate::util::batch_fold::BatchFoldFiles`]);
+    // only the link-based methods (the pair fold) record and read them
+    if matches!(cfg.batch_fold, BatchFoldKind::Pairs(_)) {
+        crate::util::batch_fold::write_fold_tables(
+            &c.out,
+            &data_vec.row_names()?,
+            &data_vec.column_names()?,
+            &batch_labels,
+            cell_fold.as_ref(),
+            pair_fold.as_ref(),
+        )?;
+    }
 
     Ok(SrtPreprocessed {
         cell_fold,

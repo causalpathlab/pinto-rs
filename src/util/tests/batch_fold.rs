@@ -108,3 +108,49 @@ fn a_run_without_a_saved_fold_reads_delta() {
     };
     assert!(SavedCellFold::read(&run).expect("no error").is_none());
 }
+
+/// A reference row the fold has no feature for is divided by δ of the
+/// cell's batch, as without a fold, not left raw.
+#[test]
+fn a_row_the_fold_lacks_reads_delta() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (files, _, _) = written(dir.path());
+    let saved = SavedCellFold::read_files(&files.cells, &files.cell_nodes).expect("read");
+    // rows g1 and a new g3; δ: g3 is 2 in B1 and 3 in B2
+    let delta = Mat::from_row_slice(2, 2, &[1.0, 1.0, 2.0, 3.0]);
+    let (table, col) = fitted_cells_fold_divisor(
+        &saved,
+        &names(&["g1", "g3"]),
+        &names(&["c0", "c1"]),
+        &names(&["B2", "B1"]),
+        (&delta, &names(&["B1", "B2"])),
+    );
+    let at = |cell: usize| table[(1, col[cell].expect("a column"))];
+    assert!((at(0) - 3.0).abs() < 1e-6, "c0 (B2): {}", at(0));
+    assert!((at(1) - 2.0).abs() < 1e-6, "c1 (B1): {}", at(1));
+}
+
+/// Placement neighbours: spatial pairs only, in the cell's own batch,
+/// nearest first.
+#[test]
+fn placement_neighbours_are_the_nearest_spatial_ones_in_the_batch() {
+    use crate::predict::fold::placement_neighbours;
+    use crate::util::cell_pairs::{EDGE_KIND_EXPRESSION, EDGE_KIND_SPATIAL};
+    // cell 0 at x = 0; cells 1..=6 at x = 6, 5, 4, 3, 2, 1
+    let coords = Mat::from_fn(7, 1, |i, _| if i == 0 { 0.0 } else { 7.0 - i as f32 });
+    let pairs: Vec<(u32, u32)> = (1..7).map(|v| (0, v)).collect();
+    // pair (0, 6) is an expression edge; cell 5 is in another batch
+    let kind = [
+        EDGE_KIND_SPATIAL,
+        EDGE_KIND_SPATIAL,
+        EDGE_KIND_SPATIAL,
+        EDGE_KIND_SPATIAL,
+        EDGE_KIND_SPATIAL,
+        EDGE_KIND_EXPRESSION,
+    ];
+    let batch = [0u32, 0, 0, 0, 0, 1, 0];
+    let n = placement_neighbours(&pairs, Some(&kind), &coords, &batch);
+    assert_eq!(n[0], vec![4, 3, 2, 1]);
+    assert_eq!(n[1], vec![0]);
+    assert!(n[5].is_empty() && n[6].is_empty());
+}

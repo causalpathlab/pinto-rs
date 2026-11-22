@@ -702,7 +702,15 @@ pub fn predict_cage(
                     of_cell: &batch_of_cell,
                     model_label: &model_label,
                 },
-                Some(&fine_edges),
+                &fold::QueryCells {
+                    names: &cell_names,
+                    neighbours: Some(&fold::placement_neighbours(
+                        &fine_edges,
+                        srt_cell_pairs.edge_kind.as_deref(),
+                        &coordinates,
+                        &batch_of_cell,
+                    )),
+                },
             )?)
         }
         _ => None,
@@ -854,8 +862,13 @@ pub fn predict_cage(
             .map(|f| crate::util::batch_fold::BatchFoldPlacement {
                 neighbours: fold::PLACEMENT_NEIGHBOURS,
                 placed_cells: f.n_placed,
+                fitted_cells: f.n_fitted,
                 cells: n_cells,
             });
+    if fold_divisor.as_ref().is_some_and(|f| f.n_placed > 0) {
+        meta.outputs.profiles_divided_by =
+            Some(crate::util::batch_fold::ProfilesDividedBy::CellFold);
+    }
     meta.feature_names = FeatureNameMode::of_kind(&feature_kind);
     meta.outputs.feature_community_batch_adjusted &= model_adjusted;
     // A predicted sample is placed by the model's encoder; it is not a model

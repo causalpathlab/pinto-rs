@@ -329,6 +329,9 @@ pub struct BatchFoldPlacement {
     pub neighbours: usize,
     /// Cells divided by a placed node's fold; the rest kept δ.
     pub placed_cells: usize,
+    /// Of those, cells the fit itself saw, which keep its node.
+    #[serde(default)]
+    pub fitted_cells: usize,
     pub cells: usize,
 }
 
@@ -359,7 +362,12 @@ impl SavedCellFold {
         let found = |rel: &str| -> anyhow::Result<String> {
             run.recorded_output(Some(rel), rel)?
                 .map(|p| p.to_string_lossy().into_owned())
-                .ok_or_else(|| anyhow::anyhow!("{rel}: recorded in the manifest but not found"))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{rel}: the model's manifest records its batch fold but the file is not \
+                         beside it; copy the run's .batch_fold_*.parquet files with the model"
+                    )
+                })
         };
         Self::read_files(&found(&files.cells)?, &found(&files.cell_nodes)?).map(Some)
     }
