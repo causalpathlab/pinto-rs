@@ -54,7 +54,7 @@ fn print_logo() {
     }
     println!(
         " {}",
-        "Proximity-based Interaction Network --> Tissue Organization".bold()
+        "Proximity-derived Interaction Network --> Tissue Organization".bold()
     );
     println!();
 }
@@ -64,7 +64,7 @@ fn print_logo() {
 #[command(
     version,
     propagate_version = true,
-    about = "PINTO - Proximity-based Interaction Network for Tissue Organization",
+    about = "PINTO - Proximity-derived Interaction Network for Tissue Organization",
     long_about = "PINTO discovers cell-cell interaction patterns.\n\
                   It reads spatial transcriptomics.\n\
                   It detects link communities on cell-pair graphs.\n\n\
