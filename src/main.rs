@@ -2,6 +2,7 @@ mod baselines;
 mod cell_activity_graph_embedding;
 mod cli_path;
 mod compare;
+mod donor_deviation;
 mod holdout;
 mod impute;
 mod link_community;
@@ -954,6 +955,13 @@ enum Apply {
     Impute(Box<ImputeArgs>),
 
     #[command(
+        name = "donor-deviation",
+        about = "Stage 2: which stage-1 domains are donor-specific, and which genes drive them",
+        long_about = donor_deviation::DONOR_DEVIATION_LONG_ABOUT
+    )]
+    DonorDeviation(Box<donor_deviation::DonorDeviationArgs>),
+
+    #[command(
         name = "propensity",
         about = "Estimate vertex propensity from edge clusters (standalone)",
         long_about = "Estimate vertex (cell) propensity scores from edge\n\
@@ -1440,6 +1448,7 @@ fn run_command() -> anyhow::Result<()> {
                 run_impute(args, &util::input::SrtInputArgs::qc_flags_given(c, m))?;
             }
             Apply::Propensity(args) => fit_srt_propensity(args)?,
+            Apply::DonorDeviation(args) => donor_deviation::run_donor_deviation(args)?,
         },
         Commands::Lra(lra) => match &lra.simulate {
             Some(LraSub::Simulate(args)) => fit_lra_simulate(args)?,
