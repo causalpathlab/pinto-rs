@@ -230,7 +230,7 @@ fn degenerate_widths_return_empty_rather_than_panicking() {
     let basis = Mat::zeros(2, 0);
     let edges = vec![(0usize, 1usize)];
     let store =
-        build_projection_profiles_for_edges(&data, &[0], &edges, &basis, None, None).unwrap();
+        build_projection_profiles_for_edges(&data, &[0], &edges, &basis, None, None, None).unwrap();
     assert_eq!(store.n_edges, 1);
     assert_eq!(store.m, 0);
 }
@@ -271,9 +271,16 @@ fn edge_profiles_survive_a_short_final_job() {
         }
     }
 
-    let store =
-        build_projection_profiles_for_edges(&data, &edge_indices, &edges, &basis, Some(4), None)
-            .unwrap();
+    let store = build_projection_profiles_for_edges(
+        &data,
+        &edge_indices,
+        &edges,
+        &basis,
+        Some(4),
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(store.n_edges, edges.len());
 
     let basis_t = basis.transpose();
@@ -408,6 +415,7 @@ fn profiles_read_counts_divided_by_the_batch_effect() {
         &basis,
         None,
         Some(Divisor::Registered(&delta)),
+        None,
     )
     .unwrap();
     let basis_t = basis.transpose();

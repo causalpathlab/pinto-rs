@@ -76,7 +76,7 @@ fn channelized_input(dir: &tempfile::TempDir) -> SparseIoVec {
 
 fn activities(data: &SparseIoVec, edges: &[(u32, u32)]) -> anyhow::Result<FeatureActiveEdges> {
     let axis = FeatureAxis::resolve(&data.row_names()?)?;
-    build_feature_active_fine_edges(data, edges, &axis, None)
+    build_feature_active_fine_edges(data, edges, &axis, None, None)
 }
 
 /// Break it by indexing `feature_active_edges` with the row instead of the feature and

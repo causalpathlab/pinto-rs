@@ -66,6 +66,23 @@ pub struct SrtPreprocessConfig<'a> {
     /// cells in each (section, batch) group and the number of batches. A
     /// fit whose memory the batches decide refuses here ([`AutoBatchCheck`]).
     pub auto_batch_memory_check: Option<&'a AutoBatchCheck<'a>>,
+    /// Which state-aware batch fold to estimate beside δ, when there is one
+    /// ([`crate::util::batch_fold`]).
+    pub batch_fold: BatchFoldKind,
+}
+
+/// The state-aware batch fold a fit divides by, beside δ.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchFoldKind {
+    /// None: δ alone (queries, and fits that divide by nothing).
+    None,
+    /// Each cell's own fold: the baselines, on cells and on their
+    /// pseudobulks (sums of divided cells).
+    Cells,
+    /// Each cell's fold and each cell pair's own fold, estimated on pair
+    /// units over the given states (`--pair-fold-states`): lc, dsvd and
+    /// cage, which model pairs.
+    Pairs(crate::util::batch_fold::PairStates),
 }
 
 /// A check on the `--auto-batch` components before δ is estimated over
@@ -169,6 +186,14 @@ pub struct SrtPreprocessed {
     /// The batch-effect posterior, `[n_rows × batch_labels]`. `None` when
     /// single-batch or not estimated.
     pub batch_effects: Option<BatchPosterior>,
+    /// Each cell's state-aware fold (rows of δ), with [`BatchFoldKind::Cells`]
+    /// or [`BatchFoldKind::Pairs`] and a δ.
+    pub cell_fold: Option<crate::util::batch_fold::CellFold>,
+    /// Each pair of [`Self::graph`]'s edges' own fold, in edge order, with
+    /// [`BatchFoldKind::Pairs`] and a δ.
+    pub pair_fold: Option<crate::util::batch_fold::PairFold>,
+    /// The fold tables written beside δ (only for [`BatchFoldKind::Pairs`]).
+    pub fold_written: crate::util::batch_fold::FoldWritten,
     /// Expression mode's base graph was built on the batch-corrected
     /// projection, for the manifest's
     /// [`crate::util::metadata::GraphParams::base_batch_corrected`].
@@ -632,7 +657,19 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
     // tests stay in step by construction rather than by both remembering to
     // say `&& has_coords`. That agreement is what the `expect` below rests on.
     let augment_knn = knn.augment;
-    let take_projection = cfg.cell_projection || augment_knn > 0;
+    // the state-aware fold: a fit that estimates δ and asks for it. Not with
+    // CNV clone strata: the pair-unit collapse does not carry them yet
+    let fold_wanted = cfg.batch_fold != BatchFoldKind::None
+        && cfg.batch_effects == BatchEstimate::Fit
+        && estimate
+        && batch_labels.len() > 1;
+    let fold_wanted = if fold_wanted && c.collapse.cnv_clones.is_some() {
+        info!("--cnv-clones: the state-aware batch fold is skipped; dividing by δ alone");
+        false
+    } else {
+        fold_wanted
+    };
+    let take_projection = cfg.cell_projection || augment_knn > 0 || fold_wanted;
     // An estimate that gives no δ is no estimate: nothing is divided, and
     // nothing is corrected for it.
     let mut batch_effects = match early_estimate {
@@ -763,7 +800,68 @@ pub fn preprocess_srt(cfg: SrtPreprocessConfig<'_>) -> anyhow::Result<SrtPreproc
         )?;
     }
 
+    let (cell_fold, pair_fold) = match (&batch_effects, cell_proj.as_ref()) {
+        (Some(effects), Some(proj))
+            if fold_wanted
+                && effects.groups.coarsest.len() == n_cells
+                && effects.groups.finest.len() == n_cells =>
+        {
+            let posterior = effects.posterior.as_ref().expect("filtered to Some above");
+            let delta = legume_numeric::param::traits::Inference::posterior_mean(&posterior.gamma);
+            let batch_of_cell =
+                crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels);
+            info!("Estimating the state-aware batch fold over cells");
+            let cells = crate::util::batch_fold::estimate_cell_fold(
+                &data_vec,
+                &batch_of_cell,
+                delta,
+                &effects.groups,
+                &proj.proj,
+            )?;
+            let pairs = match cfg.batch_fold {
+                BatchFoldKind::Pairs(pair_states) => {
+                    Some(crate::util::batch_fold::estimate_pair_batch_fold(
+                        &data_vec,
+                        &graph.edges,
+                        &batch_membership,
+                        &cells,
+                        c.collapse.proj_dim,
+                        c.collapse.num_levels,
+                        pair_states,
+                    )?)
+                }
+                _ => None,
+            };
+            (Some(cells), pairs)
+        }
+        _ => {
+            if fold_wanted && batch_effects.is_some() {
+                warn!(
+                    "the state-aware batch fold was not estimated (the collapse's groups do not \
+                     cover the cells); dividing by δ alone"
+                );
+            }
+            (None, None)
+        }
+    };
+    // beside δ, for predict and impute ([`crate::util::batch_fold::BatchFoldFiles`]);
+    // only the link-based methods (the pair fold) record and read them
+    let fold_written = match cfg.batch_fold {
+        BatchFoldKind::Pairs(_) => crate::util::batch_fold::write_fold_tables(
+            &c.out,
+            &data_vec.row_names()?,
+            &data_vec.column_names()?,
+            &batch_labels,
+            cell_fold.as_ref(),
+            pair_fold.as_ref(),
+        )?,
+        _ => crate::util::batch_fold::FoldWritten::None,
+    };
+
     Ok(SrtPreprocessed {
+        fold_written,
+        cell_fold,
+        pair_fold,
         data_vec,
         coordinates,
         coordinate_names,

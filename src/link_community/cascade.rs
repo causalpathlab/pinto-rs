@@ -51,6 +51,10 @@ pub enum ProfileMode<'a> {
         /// The run's batch effect `[rows × batches]`, divided out of every
         /// count before it is pooled or projected; `None` without one.
         divisor: Option<crate::util::batch_effects::Divisor<'a>>,
+        /// Each fine edge's batch fold per endpoint, in edge order, in place
+        /// of `divisor` for the fine edges ([`crate::util::batch_fold::PairFold`]);
+        /// super-cells keep `divisor`.
+        pair_fold: Option<&'a crate::util::batch_fold::PairFold>,
     },
 }
 
@@ -267,7 +271,9 @@ fn build_level_profiles(
                 basis,
             ))
         }
-        ProfileMode::Projection { basis, divisor } => {
+        ProfileMode::Projection { basis, divisor, .. } => {
+            // super-cells pool their cells' counts, each cell divided by its
+            // own fold (`divisor`); the pair fold divides the fine edges only
             // Coarsen fine-cell expression to pb-samples, then project
             // pb-sample aggregates through the basis. Previously this path
             // passed fine-cell data with cluster-label indices, which read

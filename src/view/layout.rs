@@ -11,13 +11,14 @@ use crate::util::common::Mat;
 use legume_numeric::matrix::dense_mat_io::l2_normalize_rows_inplace;
 use legume_numeric::matrix::layout::{
     coarsened, diffusion_map_2d_on_graph, forceatlas2_layout_2d_on_graph, lle_layout_2d_on_graph,
-    phate_layout_2d_on_graph, stress_layout_2d_on_graph, tsne_layout_2d_on_graph,
-    umap_layout_2d_on_graph, CoarsenArgs, Coarsened, PhateArgs, TsneArgs,
+    phate_layout_2d_on_graph, radial_tree_layout_2d_on_graph, stress_layout_2d_on_graph,
+    sugiyama_layout_2d_on_graph, tsne_layout_2d_on_graph, umap_layout_2d_on_graph, CoarsenArgs,
+    Coarsened, PhateArgs, TsneArgs,
 };
 use legume_numeric::matrix::umap::Umap;
 
 /// A layout of the cells.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, clap::ValueEnum)]
 pub enum Method {
     Umap,
     /// UMAP with its kernel's `a = b = 1`: tighter clusters.
@@ -28,11 +29,15 @@ pub enum Method {
     ForceAtlas2,
     Lle,
     Stress,
+    /// Layered drawing by breadth-first level from a root.
+    Sugiyama,
+    /// Radial drawing of the maximum spanning tree.
+    Radial,
 }
 
 impl Method {
     /// Every layout, in the order the view cycles through them.
-    pub const ALL: [Method; 8] = [
+    pub const ALL: [Method; 10] = [
         Method::Umap,
         Method::Tumap,
         Method::Tsne,
@@ -41,6 +46,8 @@ impl Method {
         Method::ForceAtlas2,
         Method::Lle,
         Method::Stress,
+        Method::Sugiyama,
+        Method::Radial,
     ];
 
     /// Its name, as the view shows it.
@@ -55,6 +62,8 @@ impl Method {
             Method::ForceAtlas2 => "ForceAtlas2",
             Method::Lle => "LLE",
             Method::Stress => "stress",
+            Method::Sugiyama => "Sugiyama",
+            Method::Radial => "radial tree",
         }
     }
 
@@ -176,7 +185,57 @@ fn on_pseudobulks(pbs: &Coarsened, method: Method, seed: u64) -> anyhow::Result<
         }
         Method::Lle => lle_layout_2d_on_graph(&pbs.pb_features.transpose(), edges),
         Method::Stress => stress_layout_2d_on_graph(n, edges, seed),
+        Method::Sugiyama => sugiyama_layout_2d_on_graph(n, edges, None),
+        Method::Radial => radial_tree_layout_2d_on_graph(n, edges, None),
     })
+}
+
+/// Any table of rows to lay out (`N × K` parquet, its first column the rows'
+/// names), read as a layout reads its kind: community columns (`C0`, `C1`,
+/// …) as a propensity, by their square roots (Hellinger); otherwise every
+/// column as an embedding, each row by its direction (cosine). The rows can
+/// be cells or cell pairs (a pair latent).
+pub fn read_any_table(path: &std::path::Path) -> anyhow::Result<(Vec<Box<str>>, Mat)> {
+    use crate::util::parquet_io::{parse_community_col_name, read_labelled_matrix};
+    let m = read_labelled_matrix(path)?;
+    let communities: Vec<usize> = m
+        .cols
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| parse_community_col_name(c).is_some())
+        .map(|(j, _)| j)
+        .collect();
+    if communities.is_empty() {
+        let mut mat = m.mat;
+        l2_normalize_rows_inplace(&mut mat);
+        Ok((m.rows, mat))
+    } else {
+        let mut mat = m.mat.select_columns(&communities);
+        mat.apply(|v| *v = v.max(0.0).sqrt());
+        Ok((m.rows, mat))
+    }
+}
+
+/// `pinto view --layout`: lay out `table` by `method` and write each row's
+/// `x`, `y` to `out` (parquet, the rows keyed as the table's first column).
+pub fn write_layout(table: &std::path::Path, method: Method, out: &str) -> anyhow::Result<()> {
+    use legume_numeric::matrix::parquet::{write_named_table, Column};
+    let key = crate::util::parquet_io::field_names(table)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("{table:?}: no columns"))?;
+    let (names, mat) = read_any_table(table)?;
+    let seed = crate::util::common::DEFAULT_SEED;
+    log::info!(
+        "{} layout of {} rows of {table:?}",
+        method.name(),
+        names.len()
+    );
+    let xy = Coarse::new(names.clone(), &mat, seed)?.lay_out(method, seed)?;
+    let x: Vec<f32> = xy.column(0).iter().copied().collect();
+    let y: Vec<f32> = xy.column(1).iter().copied().collect();
+    let columns = [("x".into(), Column::F32(&x)), ("y".into(), Column::F32(&y))];
+    write_named_table(out, &key, &names, &columns)
 }
 
 /// A table of the run's cells a layout is made of.

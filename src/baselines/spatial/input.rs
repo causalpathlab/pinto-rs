@@ -349,6 +349,7 @@ impl SpatialInputArgs {
             batch_membership,
             section_ids,
             batch_effects,
+            cell_fold,
             cell_proj,
             permuted_coordinates,
             ablation,
@@ -362,6 +363,7 @@ impl SpatialInputArgs {
             feature_kind: Some(FeatureNameKind::Exact),
             cell_projection: with_projection,
             auto_batch_memory_check: Some(&check),
+            batch_fold: crate::util::srt_pipeline::BatchFoldKind::Cells,
         })?;
         // the -pb commands coarsen along the graph; the rest drop it now
         let pair_graph = with_projection.then_some((graph.edges, graph.distances));
@@ -371,8 +373,13 @@ impl SpatialInputArgs {
             batches: p.batches.clone(),
         });
         let mean = batch_effects.map(|p| p.into_mean()).transpose()?;
-        // each count divided by its gene's δ in its cell's batch, as lc divides
-        let divisor = mean.as_ref().map(Divisor::Registered);
+        // each count divided by its cell's own fold (its gene's δ in its
+        // batch, refined by the cell's state), as lc divides; the -pb forms
+        // pool these divided cells, so their pseudobulks are unbiased too
+        let divisor = match cell_fold.as_ref() {
+            Some(f) => Some(Divisor::from(f.table.divisor())),
+            None => mean.as_ref().map(Divisor::Registered),
+        };
         let counts = read_columns_divided(&data_vec, 0..cells.len(), divisor)?;
         drop(data_vec);
         let plane = ablation::non_batch_columns(&coordinate_names);

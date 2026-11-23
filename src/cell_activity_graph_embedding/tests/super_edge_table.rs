@@ -62,9 +62,9 @@ fn cage_trains_a_row_per_super_edge_and_a_cell_averages_its_pairs() {
         }
     }
     for (i, name) in cells.rows.iter().enumerate() {
-        for j in 0..d {
+        for (j, &total) in sum[i].iter().enumerate() {
             let want = if count[i] > 0 {
-                sum[i][j] / count[i] as f32
+                total / count[i] as f32
             } else {
                 0.0
             };

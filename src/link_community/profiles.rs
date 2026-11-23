@@ -157,6 +157,9 @@ pub(crate) fn read_unique_cells_for_edges(
 /// * `basis` - Projection basis [n_features × proj_dim]
 /// * `block_size` - Edges per parallel chunk (None ⇒ adaptive default)
 /// * `divisor` - What divides every count first: the run's batch effect
+/// * `pair_fold` - Each edge's batch fold per endpoint (`all_edges` order),
+///   dividing each endpoint's counts in place of `divisor`
+///   ([`crate::util::batch_fold::PairFold`])
 pub fn build_projection_profiles_for_edges(
     data: &SparseIoVec,
     edge_indices: &[usize],
@@ -164,7 +167,10 @@ pub fn build_projection_profiles_for_edges(
     basis: &Mat,
     block_size: Option<usize>,
     divisor: Option<Divisor<'_>>,
+    pair_fold: Option<&crate::util::batch_fold::PairFold>,
 ) -> anyhow::Result<LinkProfileStore> {
+    // a pair divides by its own fold, never by its cells' δ as well
+    let divisor = if pair_fold.is_some() { None } else { divisor };
     let n_edges = edge_indices.len();
     let m = basis.ncols(); // proj_dim
     let basis_t = basis.transpose(); // shared read-only across chunks
@@ -204,14 +210,25 @@ pub fn build_projection_profiles_for_edges(
 
             for (job_edge, &(cell_u, cell_v)) in job_edges.iter().enumerate() {
                 pooled_g.fill(0.0);
-                for read_col in [col_of_cell[&cell_u], col_of_cell[&cell_v]] {
+                let folds =
+                    pair_fold.map(|f| f.endpoint_folds(edge_indices[edge_begin + job_edge]));
+                for (side, read_col) in [col_of_cell[&cell_u], col_of_cell[&cell_v]]
+                    .into_iter()
+                    .enumerate()
+                {
                     let cell_counts = x_gc.col(read_col);
+                    let fold = folds
+                        .as_ref()
+                        .map(|(fu, fv)| if side == 0 { fu } else { fv });
                     for (&feature, &count) in cell_counts
                         .row_indices()
                         .iter()
                         .zip(cell_counts.values().iter())
                     {
-                        pooled_g[feature] += count;
+                        pooled_g[feature] += match fold {
+                            Some(f) if f[feature] > 0.0 => count / f[feature],
+                            _ => count,
+                        };
                     }
                 }
 

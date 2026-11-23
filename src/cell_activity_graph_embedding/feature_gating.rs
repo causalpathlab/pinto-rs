@@ -51,15 +51,18 @@ pub struct FeatureActiveEdges {
 /// pseudobulk, or across batches) is skipped: the fold would drop it, and
 /// those are most of the edges.
 ///
-/// The counts are not divided by the batch effect: positives are drawn per
-/// (feature, batch), within which a feature's `δ` is one constant, so it
-/// would not move a single draw. The batch adjustment belongs where pairs
-/// are compared across batches.
+/// The counts are not divided by δ: positives are drawn per (feature,
+/// batch), within which a feature's `δ` is one constant, so it would not
+/// move a single draw. With `pair_fold` (each edge's own batch fold, edge
+/// order) a pair's weight is divided by its fold, which does move them: the
+/// fold varies with the cell state inside a batch. A feature's fold over
+/// its rows is their geometric mean.
 pub fn build_feature_active_fine_edges(
     data: &SparseIoVec,
     edges: &[(u32, u32)],
     axis: &FeatureAxis,
     fine_to_super: Option<&[Option<usize>]>,
+    pair_fold: Option<&crate::util::batch_fold::PairFold>,
 ) -> anyhow::Result<FeatureActiveEdges> {
     let n_cells = data.num_columns();
     let n_rows = data.num_rows();
@@ -124,6 +127,29 @@ pub fn build_feature_active_fine_edges(
     // two sorted lists in tandem, emitting `(edge_idx, x_u + x_v)` for
     // every feature at either end. Features are appended in edge-iteration
     // order, so per-feature edge lists are sorted ascending by construction.
+    // each fold column over the features: the geometric mean of its rows
+    let feature_fold = pair_fold.map(|t| {
+        let mut log_sum = nalgebra::DMatrix::<f32>::zeros(n_features, t.fold.ncols());
+        let mut rows_of = vec![0f32; n_features];
+        for r in 0..n_rows {
+            let g = axis.feature_of_row(r);
+            rows_of[g] += 1.0;
+            for col in 0..t.fold.ncols() {
+                log_sum[(g, col)] += t.fold[(r, col)].max(1e-8).ln();
+            }
+        }
+        for (g, &n) in rows_of.iter().enumerate() {
+            let n = n.max(1.0);
+            log_sum.row_mut(g).apply(|v| *v = (*v / n).exp());
+        }
+        log_sum
+    });
+    anyhow::ensure!(
+        pair_fold.is_none_or(|t| t.endpoint_cols.len() == edges.len()),
+        "a pair fold of another length than the {} edges",
+        edges.len()
+    );
+
     let mut feature_active_edges: Vec<Vec<u32>> = vec![Vec::new(); n_features];
     let mut feature_active_edge_weights: Vec<Vec<f32>> = vec![Vec::new(); n_features];
     for (e_idx, &(u, v)) in edges.iter().enumerate() {
@@ -133,6 +159,15 @@ pub fn build_feature_active_fine_edges(
         let gu = &cell_to_features[u as usize];
         let gv = &cell_to_features[v as usize];
         let (mut i, mut j) = (0usize, 0usize);
+        // each endpoint's count divided by its own fold column
+        let cols = pair_fold.map(|t| t.endpoint_cols[e_idx]);
+        let adj = |g: u32, x: f32, side: usize| match (&feature_fold, cols) {
+            (Some(f), Some((cu, cv))) => {
+                let col = if side == 0 { cu } else { cv } as usize;
+                x / f[(g as usize, col)].max(1e-8)
+            }
+            _ => x,
+        };
         let mut emit = |g: u32, w: f32| {
             feature_active_edges[g as usize].push(e_idx as u32);
             feature_active_edge_weights[g as usize].push(w);
@@ -145,16 +180,16 @@ pub fn build_feature_active_fine_edges(
             };
             match order {
                 std::cmp::Ordering::Equal => {
-                    emit(gu[i].0, gu[i].1 + gv[j].1);
+                    emit(gu[i].0, adj(gu[i].0, gu[i].1, 0) + adj(gv[j].0, gv[j].1, 1));
                     i += 1;
                     j += 1;
                 }
                 std::cmp::Ordering::Less => {
-                    emit(gu[i].0, gu[i].1);
+                    emit(gu[i].0, adj(gu[i].0, gu[i].1, 0));
                     i += 1;
                 }
                 std::cmp::Ordering::Greater => {
-                    emit(gv[j].0, gv[j].1);
+                    emit(gv[j].0, adj(gv[j].0, gv[j].1, 1));
                     j += 1;
                 }
             }

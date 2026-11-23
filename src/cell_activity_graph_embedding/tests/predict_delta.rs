@@ -267,11 +267,20 @@ fn impute_divides_the_reference_by_the_runs_delta(t: &Trained) {
         )
     };
     let manifest = crate::util::metadata::manifest_path(model);
-    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(&manifest)).unwrap();
+    let manifest = std::path::Path::new(&manifest);
+    let mut meta = crate::util::metadata::PintoMetadata::read(manifest).unwrap();
     assert!(
         meta.outputs.delta_cells.is_some(),
         "the fit records each cell's batch"
     );
+    assert!(
+        meta.outputs.batch_fold.is_some(),
+        "the fit saves its fold, which impute's reference then takes (pinned in \
+         util::tests::batch_fold)"
+    );
+    // without a saved fold (an older run), the reference is divided by δ
+    meta.outputs.batch_fold = None;
+    meta.write(manifest).unwrap();
     let imputed = impute("imputed").unwrap();
 
     // every training cell's counts divided by its file's δ column ("s1", "s2")

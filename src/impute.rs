@@ -141,7 +141,7 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
         let divide = if c.batch.ignore_batch {
             None
         } else {
-            reference_divide(model, &run, &ref_data.row_names()?, &ref_data)?
+            reference_divide(model, &run, &ref_data.row_names()?, &ref_data, true)?
         };
         (query_prop, query_cells, ref_prop, ref_data, divide)
     } else {
@@ -187,12 +187,15 @@ pub fn run_impute(args: &ImputeArgs, qc_given: &[String]) -> anyhow::Result<()> 
 /// one: its mean on the reference's rows (`ref_rows`), matched by name, and
 /// each cell's batch as the run estimated it, from the table the manifest
 /// records beside its δ (an error when it records none, or one that is
-/// nowhere). A cell without a batch there is left as is.
+/// nowhere). A cell without a batch there is left as is. `with_fold` (a cage
+/// run): each cell the fit placed on a node takes that node's saved fold
+/// instead, when the run saved one.
 fn reference_divide(
     model: &str,
     run: &Run,
     ref_rows: &[Box<str>],
     ref_data: &SparseIoVec,
+    with_fold: bool,
 ) -> anyhow::Result<Option<RefDivide>> {
     use crate::util::batch_effects::{read_cell_batches, read_run_delta, run_delta_cells_path};
     let Some((delta, path)) = read_run_delta(run)? else {
@@ -210,8 +213,8 @@ fn reference_divide(
         .enumerate()
         .map(|(j, b)| (b.as_ref(), j))
         .collect();
-    let batch_of_cell: Vec<Option<usize>> = ref_data
-        .column_names()?
+    let names = ref_data.column_names()?;
+    let batch_of_cell: Vec<Option<usize>> = names
         .iter()
         .map(|cell| {
             batch_of
@@ -219,13 +222,45 @@ fn reference_divide(
                 .and_then(|b| col_of.get(b.as_ref()).copied())
         })
         .collect();
+    let model_delta = delta.mean_on_rows(ref_rows);
+    // a cage run's own cells, divided by the fold of the node the fit left
+    // each in, as its encoder's training rows were; lc / dsvd stay on δ
+    let saved = if with_fold {
+        crate::util::batch_fold::SavedCellFold::read(run)?
+    } else {
+        None
+    };
+    if let Some(saved) = saved {
+        let labels: Vec<Box<str>> = names
+            .iter()
+            .map(|cell| batch_of.get(cell).cloned().unwrap_or_default())
+            .collect();
+        let (table, col) = crate::predict::fold::fitted_cells_fold_divisor(
+            &saved,
+            ref_rows,
+            &names,
+            &labels,
+            (&model_delta, &delta.batches),
+        );
+        let n_fold = saved.log_fold.ncols();
+        let on_fold = col.iter().flatten().filter(|&&c| c < n_fold).count();
+        info!(
+            "Reference counts divided by the run's batch fold: {on_fold} of {} cells by \
+             their node's fold, the rest by their batch's δ ({path})",
+            col.len()
+        );
+        return Ok(Some(RefDivide {
+            delta: table,
+            batch_of_cell: col,
+        }));
+    }
     let n = batch_of_cell.iter().flatten().count();
     info!(
         "Reference counts divided by {path}: {n} of {} cells by their batch's δ",
         batch_of_cell.len()
     );
     Ok(Some(RefDivide {
-        delta: delta.mean_on_rows(ref_rows),
+        delta: model_delta,
         batch_of_cell,
     }))
 }
@@ -462,7 +497,7 @@ fn profile_propensities(
     // run's edge-based propensity — so the kNN compares like with like.
     let ref_data = open_backends("reference", reference_files)?;
     let ref_divide = if adjusted {
-        reference_divide(model, run, &ref_data.row_names()?, &ref_data)?
+        reference_divide(model, run, &ref_data.row_names()?, &ref_data, false)?
     } else {
         None
     };

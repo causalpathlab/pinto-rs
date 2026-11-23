@@ -166,6 +166,9 @@ pub fn fit_cell_activity_graph_embedding(
     let coarsens = !args.cell_level || module_plan != ModulePlan::Off;
 
     let SrtPreprocessed {
+        fold_written,
+        cell_fold,
+        pair_fold,
         data_vec,
         coordinates,
         coordinate_names,
@@ -194,6 +197,9 @@ pub fn fit_cell_activity_graph_embedding(
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: !hvg_enabled && coarsens,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::Pairs(
+            args.pair_fold.pair_fold_states,
+        ),
         feature_kind: Some(feature_kind.clone()),
     })?;
     // Only the mean divides; the full posterior is the file preprocessing wrote.
@@ -524,6 +530,7 @@ pub fn fit_cell_activity_graph_embedding(
         &fine_edges,
         &feature_axis,
         Some(&fine_to_super),
+        pair_fold.as_ref(),
     )?;
     // Fold per-feature fine-edge activity onto the PB super edges,
     // CONSUMING the fine-level lists (they are the largest resident
@@ -947,8 +954,11 @@ pub fn fit_cell_activity_graph_embedding(
             feature_axis: None,
             edge_kind: srt_cell_pairs.edge_kind.as_deref(),
             // batch-adjusted, with the plain divide (the pairs' is the
-            // self-normalizing Poisson ratio)
-            divisor: pair_batch,
+            // self-normalizing Poisson ratio): each cell's own fold, else δ
+            divisor: cell_fold
+                .as_ref()
+                .map(|f| f.table.divisor().into())
+                .or(pair_batch),
         },
         &c.out,
     )?;
@@ -984,7 +994,7 @@ pub fn fit_cell_activity_graph_embedding(
                 k: n_edge_clusters,
                 delta: batch_db
                     .is_some()
-                    .then(|| crate::util::metadata::DeltaWritten::fit(c)),
+                    .then(|| crate::util::metadata::DeltaWritten::fit(c).with_fold(fold_written)),
             },
             splice_report,
         );

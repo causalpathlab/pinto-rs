@@ -463,6 +463,7 @@ pub fn predict_cage(
         feature_axis: FeatureAxisMode::Strict,
         cell_projection: true,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::None,
         feature_kind: Some(feature_kind.clone()),
     })?;
     let feature_axis = feature_axis.expect("FeatureAxisMode::Strict must yield Some");
@@ -665,25 +666,79 @@ pub fn predict_cage(
     let estimate = estimate
         .map(|e| e.into_delta().map(|d| d.on_batches(&query_batches)))
         .transpose()?;
-    let batch_effects = model_delta.as_ref().and_then(|(model, path)| {
-        let matched = delta::match_batches(&query_batches, c, &model.batches, &naming);
-        delta::query_delta(
-            (model, path),
-            &matched,
-            &rows,
-            &query_batches,
-            estimate.as_ref(),
-        )
-    });
+    // each query batch's model batch, when the model has it
+    let matched = model_delta
+        .as_ref()
+        .map(|(model, _)| delta::match_batches(&query_batches, c, &model.batches, &naming));
+    let batch_effects =
+        model_delta
+            .as_ref()
+            .zip(matched.as_ref())
+            .and_then(|((model, path), matched)| {
+                delta::query_delta(
+                    (model, path),
+                    matched,
+                    &rows,
+                    &query_batches,
+                    estimate.as_ref(),
+                )
+            });
     if let Some(d) = &batch_effects {
         d.write(&format!("{}.delta.parquet", c.out))?;
     }
+    // The model's saved fold, when it has one: each query cell of a batch it
+    // knows divided by a placed node's fold, as its own cells were; the rest
+    // by the δ above ([`fold::query_fold_divisor`]).
+    let saved_fold = if model_adjusted {
+        crate::util::batch_fold::SavedCellFold::read(run)?
+    } else {
+        None
+    };
+    let fold_divisor = match (&saved_fold, &batch_effects, &model_delta, &matched) {
+        (Some(saved), Some(d), Some((model, _)), Some(matched)) => {
+            let model_label: Vec<Option<Box<str>>> = matched
+                .iter()
+                .map(|m| m.map(|m| model.batches[m].clone()))
+                .collect();
+            Some(fold::query_fold_divisor(
+                saved,
+                &data_vec,
+                &rows,
+                &d.mean,
+                &fold::QueryBatches {
+                    of_cell: &batch_of_cell,
+                    model_label: &model_label,
+                },
+                &fold::QueryCells {
+                    names: &cell_names,
+                    graph: Some(fold::PlacementGraph {
+                        pairs: &fine_edges,
+                        edge_kind: srt_cell_pairs.edge_kind.as_deref(),
+                        coordinates: &coordinates,
+                    }),
+                },
+            )?)
+        }
+        _ => None,
+    };
+    // The encoder was trained on δ-divided rows (the fit's `project_pairs`),
+    // so it reads δ here too; the feature-community statistic, fitted on
+    // cell-fold-divided counts, reads the placed fold when there is one.
     let pair_batch = batch_effects.as_ref().map(|delta| {
         crate::util::batch_effects::Divisor::Batch(PairBatchDivisor {
             delta: &delta.mean,
             batch_of_cell: &batch_of_cell,
         })
     });
+    let profile_divisor = match &fold_divisor {
+        Some(f) => Some(crate::util::batch_effects::Divisor::Batch(
+            PairBatchDivisor {
+                delta: &f.table,
+                batch_of_cell: &f.col_of_cell,
+            },
+        )),
+        None => pair_batch,
+    };
 
     let dev = args.device.to_device(args.device_no)?;
     let encoder_path = pair_encoder_path(&args.model)?;
@@ -769,7 +824,7 @@ pub fn predict_cage(
             feature_weights: &feature_weights,
             axis: &feature_axis,
             // batch-adjusted when the model's is
-            divisor: pair_batch.filter(|_| model_adjusted),
+            divisor: profile_divisor.filter(|_| model_adjusted),
         },
         &labels,
         k,
@@ -801,11 +856,25 @@ pub fn predict_cage(
             delta: batch_effects.as_ref().map(|_| DeltaWritten {
                 labels: BatchLabels::of(&c.batch),
                 cells: false,
+                fold: crate::util::batch_fold::FoldWritten::None,
             }),
         },
         None,
     );
     meta.command = "predict".to_string();
+    meta.batch_fold_placement =
+        fold_divisor
+            .as_ref()
+            .map(|f| crate::util::batch_fold::BatchFoldPlacement {
+                neighbours: f.neighbours,
+                placed_cells: f.n_placed,
+                fitted_cells: f.n_fitted,
+                cells: n_cells,
+            });
+    if fold_divisor.as_ref().is_some_and(|f| f.n_placed > 0) {
+        meta.outputs.profiles_divided_by =
+            Some(crate::util::batch_fold::ProfilesDividedBy::CellFold);
+    }
     meta.feature_names = FeatureNameMode::of_kind(&feature_kind);
     meta.outputs.feature_community_batch_adjusted &= model_adjusted;
     // A predicted sample is placed by the model's encoder; it is not a model
@@ -905,6 +974,7 @@ fn write_predictive(out: &str, scores: &[PairScore]) -> anyhow::Result<()> {
 }
 
 pub(crate) mod delta;
+pub(crate) mod fold;
 
 #[cfg(test)]
 mod tests;

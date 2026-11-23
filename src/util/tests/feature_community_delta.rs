@@ -92,6 +92,7 @@ fn against_refits(dir: &std::path::Path, prefix: &str, data: &str, coords: &str)
         feature_kind: None,
         cell_projection: false,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::None,
     })
     .unwrap();
     let cells = pre.data_vec.column_names().unwrap();
@@ -141,8 +142,9 @@ fn adjusted_in_manifest(prefix: &str) -> bool {
 
 /// `fit` (given its input, output and extra flags) on two sections, the
 /// second folded on a third of the features: with δ the written dictionary
-/// is the divided refit and not the undivided one, and the manifest says
-/// so; under `--ignore-batch` it is the undivided refit.
+/// is batch-adjusted (nearer the δ-divided refit than the undivided one; it
+/// divides by each cell's fold) and the manifest says so; under
+/// `--ignore-batch` it is the undivided refit.
 fn check(fit: &dyn Fn(&[&str])) {
     let dir = tempfile::tempdir().unwrap();
     let (data, coords) = crate::test_support::two_sections(dir.path(), 8);
@@ -164,8 +166,14 @@ fn check(fit: &dyn Fn(&[&str])) {
 
     let adjusted = run("adjusted", &[]);
     let (divided, raw) = against_refits(dir.path(), &adjusted, &data, &coords);
-    assert!(divided < 1e-3, "not the divided refit: {divided}");
-    assert!(raw > 0.1, "the undivided refit too: {raw}");
+    // the dictionary divides by each cell's state-aware fold (δ refined per
+    // node, `util::batch_fold`), which is not written: it is batch-adjusted,
+    // nearer the δ-divided refit than the undivided one, not equal to either
+    assert!(raw > 0.1, "the undivided refit: {raw}");
+    assert!(
+        divided < raw,
+        "not batch-adjusted: δ-divided gap {divided}, undivided {raw}"
+    );
     assert!(adjusted_in_manifest(&adjusted));
 
     let ignored = run("ignored", &["--ignore-batch"]);
@@ -293,6 +301,20 @@ fn a_cage_query_dictionary_is_adjusted_as_the_models() {
     argv.extend_from_slice(&["-o", &model]);
     fit_cage(&argv);
 
+    // with the fold the fit saved, the query is placed on it (its own tests
+    // pin the division: util::tests::batch_fold)
+    let on_fold = predict(dir.path(), &model, &input, "on_fold");
+    let meta = crate::util::metadata::PintoMetadata::read(std::path::Path::new(
+        &crate::util::metadata::manifest_path(&on_fold),
+    ))
+    .unwrap();
+    assert!(
+        meta.batch_fold_placement
+            .is_some_and(|p| p.placed_cells > 0),
+        "a query of a model with a saved fold is placed on it"
+    );
+    // without one (an older run), on δ: the divided refit below
+    rewrite(&model, |m| m.outputs.batch_fold = None);
     let adjusted = predict(dir.path(), &model, &input, "adjusted");
     let (divided, raw) = against_refits(dir.path(), &adjusted, &data, &coords);
     assert!(divided < 1e-3, "not the divided refit: {divided}");

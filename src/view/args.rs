@@ -6,6 +6,7 @@ use super::render::Layer;
 use clap::Args;
 
 #[derive(Args, Clone, Debug)]
+#[command(group(clap::ArgGroup::new("still_output").args(["png", "pdf"]).multiple(true)))]
 pub struct ViewArgs {
     #[arg(
         help = "Run prefix (as given to -o) or its .pinto.json [default: browse]",
@@ -26,6 +27,50 @@ pub struct ViewArgs {
 
     #[arg(long, help = "Print what the run holds and exit")]
     pub summary: bool,
+
+    #[arg(
+        long,
+        requires = "still_output",
+        help = "With --png/--pdf, draw the structure plot instead of the map",
+        long_help = "With --png and/or --pdf, draw the level's structure plot\n\
+                     (every cell's community mixture as a stacked bar, a panel\n\
+                     per batch) instead of the map, as the viewer's structure\n\
+                     view does."
+    )]
+    pub structure: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        requires = "layout_out",
+        help = "Lay a table out in 2-D and write the coordinates (--layout-out)",
+        long_help = "Lay a table out in two dimensions, as the viewer's layout\n\
+                     does (its kNN graph coarsened into pseudobulks, laid out,\n\
+                     every row placed from them), write each row's x, y to\n\
+                     --layout-out and exit."
+    )]
+    pub layout: Option<crate::view::layout::Method>,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "layout",
+        help = "Table to lay out [default: the run's final propensity]",
+        long_help = "The table --layout lays out: any N x K parquet, its first\n\
+                     column the rows' names; community columns (C0, C1, ...) are\n\
+                     read as a propensity, any other table as an embedding (a cell\n\
+                     embedding, or a cell-pair latent). Default: the run's final\n\
+                     propensity, {prefix}.propensity.parquet."
+    )]
+    pub layout_table: Option<Box<str>>,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "layout",
+        help = "Parquet to write the --layout coordinates to"
+    )]
+    pub layout_out: Option<Box<str>>,
 
     #[arg(
         long,

@@ -1,5 +1,6 @@
 pub mod ablation;
 pub mod batch_effects;
+pub mod batch_fold;
 pub mod cell_pairs;
 pub mod cli;
 pub mod common;

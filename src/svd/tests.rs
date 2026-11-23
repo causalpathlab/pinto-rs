@@ -75,6 +75,7 @@ fn channels(
             &fused_pair_delta_visitor,
             &FusedDeltaInput {
                 batch_effect: delta,
+                pair_fold: None,
                 pair_to_sample: &pair_to_sample,
             },
             &mut collapsed,
@@ -91,6 +92,7 @@ fn channels(
                 basis_shared: basis.rows(0, n_features).clone_owned(),
                 basis_diff: basis.rows(n_features, n_features).clone_owned(),
                 batch_effect: delta.cloned(),
+                pair_fold: None,
             },
             &mut proj,
             None,

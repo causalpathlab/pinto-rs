@@ -55,6 +55,7 @@ pub(super) fn preprocess_with(
         feature_kind: None,
         cell_projection: false,
         auto_batch_memory_check: None,
+        batch_fold: crate::util::srt_pipeline::BatchFoldKind::None,
     })
     .expect("preprocessing should run")
 }
@@ -132,6 +133,7 @@ fn dsvd_takes_preprocessings_projection_when_it_is_its_own() {
             feature_kind: None,
             cell_projection: true,
             auto_batch_memory_check: None,
+            batch_fold: crate::util::srt_pipeline::BatchFoldKind::None,
         })
         .unwrap();
         assert_eq!(pre.batch_effects.is_some(), has_delta, "{extra:?}");

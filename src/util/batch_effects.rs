@@ -206,7 +206,7 @@ fn estimate_batch(
     data_vec: &mut SparseIoVec,
     batch_membership: &[Box<str>],
     args: EstimateBatchArgs,
-) -> anyhow::Result<(Option<GammaMatrix>, RandColProjOut)> {
+) -> anyhow::Result<(Option<GammaMatrix>, RandColProjOut, CollapseGroups)> {
     let proj_out = data_vec.project_columns_with_batch_correction(
         args.proj_dim,
         None,
@@ -220,7 +220,8 @@ fn estimate_batch(
         cell_proj_kn.ncols()
     );
 
-    let collapse_out = data_vec.collapse_columns_multilevel(
+    let mut collapse_out = collapse_columns_multilevel_with_hierarchy(
+        data_vec,
         cell_proj_kn,
         batch_membership,
         &MultilevelParams {
@@ -231,17 +232,38 @@ fn estimate_batch(
             ..MultilevelParams::new(cell_proj_kn.nrows())
         },
     )?;
+    anyhow::ensure!(!collapse_out.levels.is_empty(), "no levels processed");
+    let delta = collapse_out.levels.swap_remove(0).delta;
+    // the finest and coarsest levels' groups, shared across batches: the
+    // state-aware fold matches the finest (its pseudobulks) and builds its
+    // tree above the coarsest (`batch_fold`)
+    let levels = &collapse_out.cell_to_pb_per_level;
+    let groups = CollapseGroups {
+        finest: levels.first().cloned().unwrap_or_default(),
+        coarsest: levels.last().cloned().unwrap_or_default(),
+    };
 
-    Ok((collapse_out.delta, proj_out))
+    Ok((delta, proj_out, groups))
+}
+
+/// Each cell's group at the collapse's finest and coarsest levels.
+#[derive(Default)]
+pub struct CollapseGroups {
+    /// Its pseudobulk: what the state-aware fold matches.
+    pub finest: Vec<usize>,
+    /// What the state-aware fold's tree is built above.
+    pub coarsest: Vec<usize>,
 }
 
 /// What [`estimate_and_write_batch_effects`] gives: the posterior (`None`
-/// when the estimate gave no batch effect), and the batch-corrected random
+/// when the estimate gave no batch effect), the batch-corrected random
 /// projection (`proj_dim × cells`) the estimate collapsed on, when the
-/// caller keeps it.
+/// caller keeps it, and each cell's groups at the collapse's finest and coarsest
+/// levels (what the state-aware fold builds on, `crate::util::batch_fold`).
 pub struct BatchEffects {
     pub posterior: Option<BatchPosterior>,
     pub projection: Option<RandColProjOut>,
+    pub groups: CollapseGroups,
 }
 
 /// Estimate batch effects, and (with `out_prefix`) write them to
@@ -268,7 +290,7 @@ pub fn estimate_and_write_batch_effects(
     }
 
     info!("Estimating batch effects ({} batches)...", labels.len());
-    let (gamma, proj) = estimate_batch(data_vec, batch_membership, args)?;
+    let (gamma, proj, groups) = estimate_batch(data_vec, batch_membership, args)?;
     let projection = keep_projection.then_some(proj);
     let Some(gamma) = gamma else {
         warn!(
@@ -279,6 +301,7 @@ pub fn estimate_and_write_batch_effects(
         return Ok(Some(BatchEffects {
             posterior: None,
             projection,
+            groups,
         }));
     };
     let batches = data_vec
@@ -304,6 +327,7 @@ pub fn estimate_and_write_batch_effects(
             batches,
         }),
         projection,
+        groups,
     }))
 }
 
@@ -472,13 +496,7 @@ impl RunDelta {
     /// Each of `rows`' row in this δ, by name; `None` for a row the run did
     /// not read.
     pub fn row_index(&self, rows: &[Box<str>]) -> Vec<Option<usize>> {
-        let of: HashMap<&str, usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (r.as_ref(), i))
-            .collect();
-        rows.iter().map(|r| of.get(r.as_ref()).copied()).collect()
+        index_by_name(&self.rows, rows)
     }
 
     /// The mean alone on another matrix's `rows`, matched by name; a row
@@ -721,6 +739,16 @@ pub fn batch_ids(batch_membership: &[Box<str>], labels: &[Box<str>]) -> Vec<u32>
                 .expect("a cell's batch is one of the sorted labels") as u32
         })
         .collect()
+}
+
+/// Each of `rows`' position in `names`, by name; `None` for a row not there.
+pub fn index_by_name(names: &[Box<str>], rows: &[Box<str>]) -> Vec<Option<usize>> {
+    let of: HashMap<&str, usize> = names
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.as_ref(), i))
+        .collect();
+    rows.iter().map(|r| of.get(r.as_ref()).copied()).collect()
 }
 
 /// Divide each count of `x` by its row's δ in its column's batch, a plain
