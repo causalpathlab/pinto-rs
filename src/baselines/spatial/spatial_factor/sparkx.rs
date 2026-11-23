@@ -296,9 +296,9 @@ pub fn kernel_stats(
         .into_par_iter()
         .map(|b| {
             let mut acc = vec![0f64; m * stride];
-            for c in b * block..((b + 1) * block).min(n) {
+            let (start, end) = (b * block, ((b + 1) * block).min(n));
+            for (c, &g) in section.iter().enumerate().take(end).skip(start) {
                 let col = counts.col(c);
-                let g = section[c];
                 for (&gene, &v) in col.row_indices().iter().zip(col.values()) {
                     let v = v as f64;
                     let row = &mut acc[gene * stride..(gene + 1) * stride];
