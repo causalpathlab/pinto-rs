@@ -174,6 +174,9 @@ impl Fixture {
                 seed,
                 only: &[],
                 shard: None,
+                link_community: None,
+                min_receivers:
+                    crate::lr_activity::ligand_effect::link_community_scope::MIN_RECEIVERS,
                 cell_types: None,
                 region: None,
                 plant_region: None,
@@ -191,6 +194,7 @@ impl Fixture {
             coords: &self.coords,
             cell_type: None,
             region: None,
+            link_community_of_pair: None,
         }
     }
 }

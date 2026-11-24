@@ -177,6 +177,17 @@ impl Run {
         );
         Ok(Some(own))
     }
+
+    /// [`Self::recorded_output`] for an output the run must have: an error
+    /// naming it when the manifest records none.
+    pub fn required_recorded_output(
+        &self,
+        recorded: Option<&str>,
+        suffix: &str,
+    ) -> anyhow::Result<PathBuf> {
+        self.recorded_output(recorded, suffix)?
+            .ok_or_else(|| anyhow::anyhow!("{}: records no {suffix}", self.manifest.display()))
+    }
 }
 
 /// `path` as written in `manifest`: an absolute path as is; a relative one

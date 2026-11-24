@@ -193,7 +193,18 @@ fn estimate_on(
         Exposure::build(tissue, pair.ligand_counts, opts)
     });
     let detected: Vec<bool> = pair.receptor_counts.iter().map(|&r| r > 0.0).collect();
-    let comps = super::contacts::competence_grid(&tissue.identity_bin, &detected, opts.competences);
+    let mut comps =
+        super::contacts::competence_grid(&tissue.identity_bin, &detected, opts.competences);
+    // under `--link-community` a row outside the community is never a
+    // competent receiver: it is out of every fold and scope already, and so
+    // out of the curve's threshold grid too
+    if let Some(inside_of_row) = tissue.rows_in_community() {
+        for level in &mut comps {
+            for (competent, &inside) in level.iter_mut().zip(inside_of_row) {
+                *competent &= inside;
+            }
+        }
+    }
     let taus = thresholds(&ex, &comps, opts);
     let responses = timing::time(timing::FRAME, || pair_responses(tissue, pair));
     let fit = PairFit {

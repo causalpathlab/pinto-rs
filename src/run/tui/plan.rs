@@ -446,22 +446,33 @@ impl App {
 /// `--only`, lra-simulate's), and the run it read, which it opens. It owns
 /// only its script, `{out}.cmd.sh`: never the run's own files.
 fn on_run_job(method: &str, row: usize, dir: &Path, out: &str, argv: Vec<String>) -> Job {
-    use crate::lr_activity::{ligand_effect::output::lra_simulate_path, lra_outputs};
+    use crate::lr_activity::ligand_effect::output::lra_simulate_path;
     let cli = <crate::Cli as clap::Parser>::try_parse_from(
         std::iter::once("pinto").chain(argv.iter().map(String::as_str)),
     );
     let (done, from) = match cli.map(|c| c.commands) {
         Ok(crate::Commands::Lra(a)) => match a.simulate {
             Some(crate::LraSub::Simulate(s)) => (lra_simulate_path(out).into(), s.input.from),
-            Some(crate::LraSub::Merge(_)) => (
-                lra_outputs(crate::lr_activity::args::LraMethod::ContactEffect, out, &[])
-                    .swap_remove(0),
+            Some(crate::LraSub::Merge(m)) => (
+                crate::lr_activity::ligand_effect::link_community_scope::merge_output_of_inputs(
+                    &m.shards, out,
+                )
+                .into(),
                 None,
             ),
+            // a link community's table, or the run's (or its --only subset's)
             None => (
-                lra_outputs(a.args.method, out, &a.args.only).swap_remove(0),
+                crate::lr_activity::lra_outputs_of_link_community(
+                    a.args.method,
+                    out,
+                    &a.args.only,
+                    a.args.link_community,
+                )
+                .swap_remove(0),
                 a.args.input.from,
             ),
+            // a listing, not a job
+            Some(crate::LraSub::LinkCommunities(_)) => (PathBuf::from(out), None),
         },
         // An argv pinto does not take: the plan's check says why, and the
         // job does not run.

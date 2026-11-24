@@ -92,6 +92,7 @@ fn world_in(seed: u64, dose: f64, named: bool, regions: bool) -> World {
             log1p_depth: &log1p_depth,
             cell_type: Some(&ty),
             region: regions.then_some((region.as_slice(), region_names.as_slice())),
+            link_community: None,
         },
         &TissueOpts {
             folds: 4,

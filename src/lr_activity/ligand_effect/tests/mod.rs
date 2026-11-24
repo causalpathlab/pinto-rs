@@ -6,6 +6,7 @@ mod clusters;
 mod combining;
 mod covariates;
 mod interface;
+mod link_community;
 mod marginal_run;
 mod marginals;
 mod only;
@@ -137,4 +138,9 @@ pub(super) fn rows_of(mask: &[bool]) -> Vec<u32> {
     (0..mask.len() as u32)
         .filter(|&i| mask[i as usize])
         .collect()
+}
+
+/// `{out}.lra.parquet`, the marginal run's contact-effect table.
+pub(super) fn lra_path(out: &str) -> String {
+    super::link_community_scope::table_and_curve_paths(out, &[], None).0
 }

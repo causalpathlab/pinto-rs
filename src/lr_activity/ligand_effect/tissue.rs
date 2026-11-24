@@ -16,6 +16,9 @@ use super::confounders::{self, ConfounderInputs, Group};
 use super::contacts::{median_contact_length, Contacts};
 use super::crossfit::{CrossFit, Design, DesignPrefix};
 use super::folds::spatial_folds;
+use super::link_community_scope::{
+    community_scope, restrict_folds_to_community, CommunityScope, LinkCommunityInputs,
+};
 use super::receivers::{receiver_contacts, size_factors};
 use super::INTERNALS;
 use super::LOG_TARGET;
@@ -100,6 +103,10 @@ pub struct Tissue {
     /// ([`TissueInputs::region`]); every pair then gets one row per named
     /// region (`section` = `region:<name>`).
     pub region: Option<(Vec<u32>, Vec<Box<str>>)>,
+    /// `--link-community`: the community whose links carry the exposure and
+    /// whose receivers alone are fitted and reported
+    /// ([`super::link_community_scope`]); `None` for the marginal run.
+    pub community: Option<CommunityScope>,
 }
 
 /// One nested adjustment set: a column prefix of [`Tissue::design`].
@@ -152,11 +159,14 @@ pub struct TissueInputs<'a> {
     /// indicator per section joins the identity group, and each named region
     /// (not [`UNASSIGNED`]) gets rows of its own.
     pub region: Option<(&'a [u32], &'a [Box<str>])>,
+    /// `--link-community`: the community, its links and the fewest receivers
+    /// to fit it.
+    pub link_community: Option<&'a LinkCommunityInputs>,
 }
 
 impl Tissue {
     pub fn build(inp: &TissueInputs<'_>, opts: &TissueOpts) -> anyhow::Result<Self> {
-        let (cell, _, contacts) = receiver_contacts(inp.coords, inp.pairs);
+        let (cell, row_of, contacts) = receiver_contacts(inp.coords, inp.pairs);
         anyhow::ensure!(
             cell.len() >= 50,
             "too few cells with spatial contacts ({})",
@@ -216,6 +226,19 @@ impl Tissue {
                 opts.tile, opts.folds
             );
         }
+
+        // `--link-community`: only the community's receivers are fitted; every
+        // other row stays in the tissue (its neighbours' means read it) but
+        // out of every fold, before the design's fold Grams are built
+        let community = inp
+            .link_community
+            .as_ref()
+            .map(|lc| community_scope(lc, &row_of, cell.len()))
+            .transpose()?;
+        let cf = match &community {
+            Some(c) => restrict_folds_to_community(cf, c)?,
+            None => cf,
+        };
 
         let log_depth: Vec<f64> = cell.iter().map(|&c| inp.log1p_depth[c] as f64).collect();
         let size_factor = size_factors(&log_depth);
@@ -294,6 +317,7 @@ impl Tissue {
             scope_rows: Vec::new(),
             neighbour_bin,
             region,
+            community,
         };
         tissue.set_scopes();
         Ok(tissue)
@@ -329,6 +353,33 @@ impl Tissue {
             self.region.as_ref().map(|(r, _)| r.as_slice()),
         );
         self.scopes = out;
+        // `--link-community`: every scope over the community's receivers only;
+        // a scope none of them is in has nothing to report and is dropped
+        if let Some(community) = &self.community {
+            for rows in &mut self.scope_rows {
+                rows.retain(|&row| community.in_community[row as usize]);
+            }
+            let mut kept = self.scope_rows.iter().map(|rows| !rows.is_empty());
+            self.scopes.retain(|_| kept.next().unwrap_or(false));
+            self.scope_rows.retain(|rows| !rows.is_empty());
+        }
+    }
+
+    /// Under `--link-community`, whether each row is a receiver of the community
+    /// (every other row is out of the folds and scopes); `None` for the
+    /// marginal run, where every row is in.
+    pub fn rows_in_community(&self) -> Option<&[bool]> {
+        self.community
+            .as_ref()
+            .map(|community| community.in_community.as_slice())
+    }
+
+    /// The contacts a receiver's exposure dose is summed over: the community's
+    /// links under `--link-community`, else every contact.
+    pub fn exposure_contacts(&self) -> &Contacts {
+        self.community
+            .as_ref()
+            .map_or(&self.contacts, |community| &community.exposure_contacts)
     }
 
     pub fn n(&self) -> usize {

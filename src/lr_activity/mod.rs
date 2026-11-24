@@ -54,16 +54,26 @@ pub fn lra_outputs(
     out: &str,
     only: &[Box<str>],
 ) -> Vec<std::path::PathBuf> {
+    lra_outputs_of_link_community(method, out, only, None)
+}
+
+/// [`lra_outputs`] of a `--link-community` run (`None` for the marginal run).
+pub fn lra_outputs_of_link_community(
+    method: args::LraMethod,
+    out: &str,
+    only: &[Box<str>],
+    link_community: Option<i64>,
+) -> Vec<std::path::PathBuf> {
     use args::LraMethod::*;
     match method {
-        ContactEffect if !only.is_empty() => vec![
-            ligand_effect::only::table_path(out, only).into(),
-            ligand_effect::only::curve_path(out, only).into(),
-        ],
-        ContactEffect => vec![
-            ligand_effect::output::lra_path(out).into(),
-            ligand_effect::output::lra_curve_path(out).into(),
-        ],
+        ContactEffect => {
+            let (table, curve) = ligand_effect::link_community_scope::table_and_curve_paths(
+                out,
+                only,
+                link_community,
+            );
+            vec![table.into(), curve.into()]
+        }
         CoexpressionTest => vec![
             format!("{out}.lr_activity.parquet").into(),
             format!("{out}.lr_activity.json").into(),

@@ -287,6 +287,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
             .collect(),
         cell_type: None,
         region: None,
+        coord_pairs_row_of_pair: None,
     };
     (prefix, contacts)
 }

@@ -153,6 +153,11 @@ pub struct LraOptions {
     /// `--marginal-permutations`, when the baselines were computed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marginal_permutations: Option<usize>,
+    /// `--link-community`: the stage-1 link community whose contacts carry
+    /// the exposure, and whose receivers alone are fitted; `None` for the
+    /// marginal run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_community: Option<i64>,
 }
 
 /// A list of names as one comma-separated string, so a long one is one
@@ -203,6 +208,7 @@ impl Default for LraOptions {
             abf_prior_scale: crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
             marginal_baselines: None,
             marginal_permutations: None,
+            link_community: None,
         }
     }
 }

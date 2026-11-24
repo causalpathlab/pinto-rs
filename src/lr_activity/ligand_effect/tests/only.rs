@@ -2,6 +2,7 @@
 //! the errors for entries no pair answers, the subset's file names, and
 //! its record in the manifest apart from the full table.
 
+use super::super::link_community_scope::table_and_curve_paths;
 use super::super::only::{self, canonical, edit_distance, parse, tag, Wanted};
 use super::super::pairs::Pair;
 use super::super::pipeline::record;
@@ -127,16 +128,16 @@ fn a_subset_is_named_by_its_list_not_over_the_full_table() {
     // Order, case and spacing do not change the name.
     assert_eq!(tag(&list(&[" Liga1", "LIGB1 ", "ligb1"])), "liga1+ligb1");
     assert_eq!(
-        only::table_path("res/run", &short),
+        table_and_curve_paths("res/run", &short, None).0,
         "res/run.lra.only-liga1+ligb1.parquet"
     );
     assert_eq!(
-        only::curve_path("res/run", &short),
+        table_and_curve_paths("res/run", &short, None).1,
         "res/run.lra.only-liga1+ligb1.curve.parquet"
     );
     assert_ne!(
-        only::table_path("res/run", &short),
-        super::super::output::lra_path("res/run")
+        table_and_curve_paths("res/run", &short, None).0,
+        super::lra_path("res/run")
     );
     // A long list is named by a short stable hash.
     let long = list(&["LIGB1:RECB1_RECB2", "LIGA1:RECA44", "LIGC1:RECC1"]);

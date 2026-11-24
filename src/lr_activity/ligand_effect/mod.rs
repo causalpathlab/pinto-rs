@@ -95,6 +95,7 @@ pub mod frame;
 mod genes;
 pub mod inference;
 mod jackknife;
+pub mod link_community_scope;
 mod memory;
 pub mod only;
 mod options;
@@ -221,6 +222,11 @@ pub struct Settings<'a> {
     /// `--shard`: estimate only this shard's ligands and write their rows
     /// for `pinto lra merge` ([`shard`]); `None` for the whole run.
     pub shard: Option<shard::Shard>,
+    /// `--link-community`: the stage-1 link community the exposure runs
+    /// through, with `--min-receivers` ([`link_community_scope`]); `None`
+    /// for the marginal run.
+    pub link_community: Option<i64>,
+    pub min_receivers: usize,
     /// The bytes `PINTO_MEMORY_BUDGET` sets, read once at the start
     /// ([`crate::util::memory::budget_var`]); `None` sizes the pairs at once
     /// by half the memory available then ([`memory::pair_memory_budget`]).
@@ -244,6 +250,7 @@ impl Settings<'_> {
             abf_prior_scale: self.abf_prior_scale,
             marginal_baselines: None,
             marginal_permutations: self.marginal,
+            link_community: self.link_community,
         }
     }
 
@@ -278,4 +285,7 @@ pub struct RunInputs<'a> {
     /// Region code per data column and the regions' names, when given
     /// (`--region`): adjusted for within each section, and a row per region.
     pub region: Option<(&'a [u32], &'a [Box<str>])>,
+    /// Each contact's link community (`--link-community`, from the run's
+    /// link_community table), aligned with `pairs`.
+    pub link_community_of_pair: Option<&'a [i64]>,
 }

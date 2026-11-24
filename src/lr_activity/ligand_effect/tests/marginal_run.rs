@@ -2,14 +2,14 @@
 //! pipeline on a small tissue with named cell types, in full and with
 //! `--only`, its tables and its record in the manifest.
 
-use super::super::only;
-use super::super::output::{celltype_beside, curve_beside, lra_path};
+use super::super::output::{celltype_beside, curve_beside};
 use super::super::pipeline::merge;
 use super::super::pipeline::run;
 use super::super::reference::{with_test_root, write_empty_reference, Species};
-use super::super::shard::{self, Shard};
+use super::super::shard::Shard;
 use super::super::tissue::ALL_SECTIONS;
 use super::super::{RunInputs, Settings};
+use super::lra_path;
 use super::{lattice_contacts, type_names};
 use crate::lr_activity::args::{ReferenceSpecies, RegionJackknife};
 use crate::lr_activity::recorded;
@@ -104,6 +104,54 @@ fn reference_and_files(dir: &Path) -> (String, String) {
 /// `pinto lra --marginal-baselines --marginal-permutations` [`PERMUTATIONS`]
 /// with `only` (and `shard`) into `out`, the run's manifest at `manifest`.
 fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>], shard: Option<Shard>) {
+    run_on_the_test_tissue(
+        dir,
+        out,
+        manifest,
+        &TestRunChoices {
+            only,
+            shard,
+            marginal_baselines: true,
+            link_community: None,
+        },
+    );
+}
+
+/// What a run on the test tissue is asked for.
+pub(super) struct TestRunChoices<'a> {
+    pub only: &'a [Box<str>],
+    pub shard: Option<Shard>,
+    /// `--marginal-baselines` with [`PERMUTATIONS`].
+    pub marginal_baselines: bool,
+    /// `--link-community K` and each contact's community, aligned with
+    /// [`test_tissue_contacts`].
+    pub link_community: Option<(i64, &'a [i64])>,
+}
+
+/// The test tissue's contacts: two [`SIDE`]-square lattices.
+pub(super) fn test_tissue_contacts() -> Vec<(usize, usize)> {
+    lattice_contacts(SIDE, SECTIONS)
+}
+
+/// A cell's row within its section of the test tissue.
+pub(super) fn test_tissue_row(c: usize) -> usize {
+    place(c).0
+}
+
+/// `pinto lra` on the test tissue into `out`, the run's manifest at
+/// `manifest`, as `choices` ask.
+pub(super) fn run_on_the_test_tissue(
+    dir: &Path,
+    out: &str,
+    manifest: &Path,
+    choices: &TestRunChoices<'_>,
+) {
+    let TestRunChoices {
+        only,
+        shard,
+        marginal_baselines,
+        link_community,
+    } = *choices;
     let n = SECTIONS * SIDE * SIDE;
     let data = data(dir, n);
     let axis =
@@ -122,7 +170,7 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>], shard
         .collect();
     let codes: Vec<u32> = (0..n).map(type_code).collect();
     let names = type_names();
-    let pairs = lattice_contacts(SIDE, SECTIONS);
+    let pairs = test_tissue_contacts();
     with_test_root(&dir.join("reference"), || {
         run(&RunInputs {
             settings: Settings {
@@ -135,6 +183,9 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>], shard
                 seed: 7,
                 only,
                 shard,
+                link_community: link_community.map(|(k, _)| k),
+                min_receivers:
+                    crate::lr_activity::ligand_effect::link_community_scope::MIN_RECEIVERS,
                 cell_types: Some("ct.tsv"),
                 region: None,
                 plant_region: None,
@@ -142,7 +193,7 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>], shard
                 reference_data_labels: None,
                 region_jackknife: RegionJackknife::NoRefit,
                 abf_prior_scale: crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
-                marginal: Some(PERMUTATIONS),
+                marginal: marginal_baselines.then_some(PERMUTATIONS),
                 memory_budget: None,
             },
             data: &data,
@@ -152,6 +203,7 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>], shard
             coords: &coords,
             cell_type: Some((&codes, &names)),
             region: None,
+            link_community_of_pair: link_community.map(|(_, communities)| communities),
         })
     })
     .unwrap();
@@ -236,7 +288,8 @@ fn a_run_with_marginal_baselines_writes_and_records_its_tables() {
 
     let subset: Vec<Box<str>> = vec!["GENE1:GENE2".into()];
     marginal_run(dir.path(), &out, &manifest, &subset, None);
-    let sub_table = only::table_path(&out, &subset);
+    let sub_table =
+        super::super::link_community_scope::table_and_curve_paths(&out, &subset, None).0;
     let sub_celltype = celltype_beside(&sub_table);
     assert_full_celltype_table(&sub_celltype);
     let lra = PintoMetadata::read(&manifest).unwrap().outputs.lra;
@@ -281,7 +334,7 @@ fn shards_merged_write_the_tables_of_the_whole_run() {
                 !Path::new(&lra_path(&out)).exists(),
                 "a shard writes no table"
             );
-            shard::path(&out, s)
+            super::super::link_community_scope::shard_path(&out, s, None)
         })
         .collect();
     // a shard missing, or given twice, is refused

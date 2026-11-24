@@ -99,16 +99,6 @@ pub fn tag(list: &[Box<str>]) -> String {
     digest[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `{out}.lra.only-<tag>.parquet`, the subset's table.
-pub fn table_path(out: &str, list: &[Box<str>]) -> String {
-    format!("{out}.lra.only-{}.parquet", tag(list))
-}
-
-/// `{out}.lra.only-<tag>.curve.parquet`, its curves.
-pub fn curve_path(out: &str, list: &[Box<str>]) -> String {
-    super::output::curve_beside(&table_path(out, list))
-}
-
 /// What a subset table's `q_scope` column says.
 pub fn q_scope(n: usize, of: usize) -> String {
     format!("q corrected within the --only subset ({n} of {of} pairs)")

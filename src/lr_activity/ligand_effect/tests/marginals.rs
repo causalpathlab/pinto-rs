@@ -45,6 +45,7 @@ fn tissue(types: bool) -> Tissue {
             log1p_depth: &log1p_depth,
             cell_type: types.then_some(codes.as_slice()),
             region: None,
+            link_community: None,
         },
         &TissueOpts {
             folds: 4,

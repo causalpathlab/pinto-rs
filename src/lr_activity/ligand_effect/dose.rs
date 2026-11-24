@@ -25,8 +25,25 @@ pub struct Exposure {
 impl Exposure {
     /// The exposure side from the ligand counts the estimator sees.
     pub fn build(tissue: &Tissue, ligand_counts: &[f64], opts: &EffectOpts) -> Self {
-        let (lnorm, dose) = contact_dose(&tissue.contacts, &tissue.size_factor, ligand_counts);
-        let tau = choose_threshold(&dose, opts);
+        // under `--link-community` the dose runs through the community's links,
+        // and the threshold is read from its receivers' doses alone
+        let (lnorm, dose) = contact_dose(
+            tissue.exposure_contacts(),
+            &tissue.size_factor,
+            ligand_counts,
+        );
+        let tau = match tissue.rows_in_community() {
+            Some(inside) => {
+                let receiver_doses: Vec<f64> = dose
+                    .iter()
+                    .zip(inside)
+                    .filter(|&(_, &is_inside)| is_inside)
+                    .map(|(&d, _)| d)
+                    .collect();
+                choose_threshold(&receiver_doses, opts)
+            }
+            None => choose_threshold(&dose, opts),
+        };
         Self {
             tau,
             t: exposed(&dose, tau),

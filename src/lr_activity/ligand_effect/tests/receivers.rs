@@ -56,6 +56,7 @@ fn small(seed: u64) -> Small {
             log1p_depth: &log1p_depth,
             cell_type: None,
             region: None,
+            link_community: None,
         },
         &TissueOpts {
             folds: 3,

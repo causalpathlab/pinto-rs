@@ -65,14 +65,21 @@ impl TableRef {
         }
         let name = path.to_string_lossy();
         let curve = PathBuf::from(curve_beside(&name));
+        // a --link-community table names its community, which its exposure
+        // runs through, so it is never read as the marginal run's
+        let link_community =
+            crate::lr_activity::ligand_effect::link_community_scope::link_community_in_name(&name);
         TableRef {
             path: path.to_path_buf(),
             curve: curve.is_file().then_some(curve),
-            subset: name.contains(".lra.only-").then(|| LraSubset {
+            subset: (name.contains(".lra.only-") || link_community.is_some()).then(|| LraSubset {
                 table: name.to_string(),
                 ..Default::default()
             }),
-            options: run.lra_options(),
+            options: LraOptions {
+                link_community,
+                ..run.lra_options()
+            },
         }
     }
 }
@@ -727,6 +734,15 @@ impl LraView {
         row: &PairRow,
         level: usize,
     ) -> anyhow::Result<()> {
+        // the map reads exposure over every contact; a --link-community
+        // table's exposure runs through its community's links alone
+        if let Some(link_community) = options.link_community {
+            anyhow::bail!(
+                "a --link-community table's pairs are not drawn yet (its exposure runs \
+                 through link community {link_community} alone); read its rows, or draw \
+                 the marginal table's"
+            );
+        }
         let key = Self::key(row, options);
         let on = match self.drawn.iter().position(|(k, _)| *k == key) {
             Some(at) => self.drawn.remove(at).1,

@@ -2,6 +2,7 @@ use super::*;
 use crate::built_cli as cli;
 use crate::lr_activity::ligand_effect::output::SimRun;
 use crate::lr_activity::ligand_effect::simulate::Scenario;
+use crate::lr_activity::lra_outputs;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 
 fn lra_args(v: Value) -> LraToolArgs {
@@ -101,7 +102,7 @@ fn run_lra_passes_shard_and_writes_its_shard_file() {
         [PathBuf::from("/p/out.lra.shard-1-of-4.cbor")]
     );
     // the merge it points to names every shard under the same out
-    let merge = merge_args(a.shard().unwrap().unwrap(), "/p/out");
+    let merge = merge_args(a.shard().unwrap().unwrap(), "/p/out", None);
     let shards: Vec<String> = (0..4)
         .map(|i| format!("/p/out.lra.shard-{i}-of-4.cbor"))
         .collect();

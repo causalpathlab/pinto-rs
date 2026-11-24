@@ -1,10 +1,9 @@
 //! What users see: the verdict vocabulary and file names.
 
+use super::lra_path;
 use crate::lr_activity::ligand_effect::effects::ScopeEffects;
 use crate::lr_activity::ligand_effect::inference::Estimate;
-use crate::lr_activity::ligand_effect::output::{
-    lra_path, lra_simulate_path, write_effects, Q_SCOPE_ALL,
-};
+use crate::lr_activity::ligand_effect::output::{lra_simulate_path, write_effects, Q_SCOPE_ALL};
 use crate::lr_activity::ligand_effect::output::{percent_short, percent_text};
 use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
 use crate::lr_activity::ligand_effect::verdict;
