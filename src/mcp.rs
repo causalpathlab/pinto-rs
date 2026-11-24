@@ -7,13 +7,9 @@ use serde_json::Value;
 
 /// What the agent is told when it connects: what the tools are for, and in
 /// which order to call them. `pinto mcp --help` prints the same, for clients
-/// that do not pass it on. The verdicts are `pinto lra --help`'s, from the one
-/// table ([`crate::lr_activity::ligand_effect::verdict::Verdict`]).
+/// that do not pass it on.
 pub fn instructions() -> String {
-    format!(
-        "{FITS} {SIMULATE} {LRA} Each pair's verdict is one of: {}. {LOOKING}",
-        crate::lr_activity::ligand_effect::verdict::verdict_line()
-    )
+    format!("{FITS} {SIMULATE} {LRA} {LOOKING}")
 }
 
 const FITS: &str = "\
@@ -74,9 +70,11 @@ tissue and reports power and type I error. Run lra simulate to check power \
 and calibration before trusting lra on a new tissue. A large tissue can run \
 in shards: `run_lra` with `shard` I/N for each I, each shard a separate job \
 (e.g. a Slurm array task), then `run_lra_merge` on the N shard files writes \
-the tables of the whole run. `view_lra` lists a \
-run's pairs with their verdicts and, given a pair, makes `view_map` draw it; \
-`view_export` with `curve: true` writes its threshold-response curve.";
+the tables of the whole run. lra judges nothing: each pair's effect, its \
+effect in receptor-negative receivers and their contrast come with SE, df and \
+p, and co-expression with its local fdr; the reader decides. `view_lra` lists \
+a run's pairs with their statistics and, given a pair, makes `view_map` draw \
+it; `view_export` with `curve: true` writes its threshold-response curve.";
 
 const LOOKING: &str = "\
 Looking: start with `view_open` on a run prefix (the `out` of a \

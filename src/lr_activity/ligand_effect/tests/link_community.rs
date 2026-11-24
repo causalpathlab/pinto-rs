@@ -178,7 +178,7 @@ fn a_communitys_tables_shards_and_q_scope_are_its_own() {
     );
     assert_eq!(
         q_scope(&[], 2, 2, Some(4)),
-        "q corrected within link community 4"
+        "co-expression lfdr fitted within link community 4"
     );
 }
 
@@ -321,6 +321,27 @@ fn collecting_lines_up_columns_a_community_table_lacks() {
     let moran_i = batch.column_by_name("moran_i").unwrap();
     assert_eq!((moran_i.len(), moran_i.null_count()), (2, 1));
     assert!(moran_i.is_null(1));
+}
+
+/// A table from before local fdrs (its BH `effect_dr_q`) is not collected
+/// beside tables with lfdrs, which would leave each half of the column empty.
+#[test]
+fn collecting_refuses_a_table_with_q_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let at = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+    let names: Vec<Box<str>> = vec!["L1:R1".into()];
+    let old = at("run.lra.parquet");
+    write_named_table(
+        &old,
+        "pair",
+        &names,
+        &[("effect_dr_q".into(), Column::F32(&[0.01]))],
+    )
+    .unwrap();
+    let e = collect_link_community_tables(&[old], &at("all"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("rerun pinto lra"), "{e}");
 }
 
 #[cfg(feature = "view")]

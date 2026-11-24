@@ -31,7 +31,7 @@ pub struct ScopeEffects {
     /// weights and no outcome model. Its SE is clustered by tile, and like the
     /// headline it is averaged over exposure thresholds. It is the answer a
     /// comparison without adjustment would give, the reference the adjusted
-    /// estimates are read against, and it enters no verdict.
+    /// estimates are read against.
     pub unadj: Estimate,
     /// The competent effect by overlap weights alone ([`arm_contrast`]).
     pub ipw: Estimate,

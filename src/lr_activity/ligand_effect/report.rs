@@ -1,203 +1,108 @@
-//! Across pairs: multiplicity, and each row judged into a verdict.
+//! Across pairs: each row's p-values, co-expression's local fdr, and why a
+//! row has no estimate. Nothing is judged: the statistics are reported and
+//! the reader decides.
+//!
+//! The causal statistics (the competent effect, the effect in
+//! receptor-negative receivers, their contrast) are reported as estimate,
+//! SE, df and two-sided p against the theoretical null: the effect's and
+//! the contrast's SE from the tile jackknife, the receptor-negative
+//! effect's the clustered one, which no jackknife widens. Co-expression, a
+//! baseline that spatial autocorrelation shifts and widens alike in every
+//! pair, also gets Efron's local fdr within its section, under the null
+//! fitted to the bulk of the section's pairs and under `N(0, 1)`.
 
-use super::inference::{upper_normal_p, Estimate, ONE_CLUSTER_DF};
+use super::inference::{upper_normal_p, ONE_CLUSTER_DF};
 use super::options::thin_arm;
 use super::rows::EffectRow;
-use super::verdict::{verdict, Evidence};
-use super::INTERNALS;
+use crate::util::local_fdr::{two_groups, NormalNull};
 
-/// What [`report`] needs beyond the rows.
-#[derive(Clone, Copy, Debug)]
-pub struct ReportOpts {
-    /// BH level for every q-value the verdict reads.
-    pub fdr: f64,
-    /// `exposure_eta2` at or above which a pair is "cell-type confounded".
-    pub max_exposure_eta2: f64,
-    /// [`super::options::EffectOpts::min_arm`], to say why a pair is not estimable.
-    pub min_arm: usize,
-}
+/// Fewest finite co-expression scores in a section for their local fdr: the
+/// two-group model's null and mixture density are fitted to the section
+/// itself, and a handful of scores fit neither. A smaller section (a short
+/// `--only` list, a small community) reports co-expression's p alone.
+pub const MIN_STATISTICS_FOR_LOCAL_FDR: usize = 100;
 
-impl Default for ReportOpts {
-    /// What [`report`] reads of [`INTERNALS`].
-    fn default() -> Self {
-        Self {
-            fdr: INTERNALS.fdr,
-            max_exposure_eta2: INTERNALS.max_exposure_eta2,
-            min_arm: INTERNALS.min_arm,
-        }
-    }
-}
-
-/// Benjamini–Hochberg q-values. Non-finite p are left out of the count and
-/// get NaN.
-pub fn bh(p: &[f64]) -> Vec<f64> {
-    let mut idx: Vec<usize> = (0..p.len()).filter(|&i| p[i].is_finite()).collect();
-    idx.sort_by(|&a, &b| p[a].total_cmp(&p[b]));
-    let m = idx.len() as f64;
-    let mut q = vec![f64::NAN; p.len()];
-    let mut run = 1.0f64;
-    for (r, &i) in idx.iter().enumerate().rev() {
-        run = run.min(p[i] * m / (r + 1) as f64);
-        q[i] = run;
-    }
-    q
-}
-
-/// Simes p of one family, `min_r p_(r) k / r` over its `k` finite p; NaN
-/// when there are none.
-pub fn simes(p: &[f64]) -> f64 {
-    let mut v: Vec<f64> = p.iter().copied().filter(|x| x.is_finite()).collect();
-    if v.is_empty() {
-        return f64::NAN;
-    }
-    v.sort_by(f64::total_cmp);
-    let k = v.len() as f64;
-    v.iter()
-        .enumerate()
-        .map(|(r, &x)| x * k / (r + 1) as f64)
-        .fold(1.0, f64::min)
-}
-
-/// p-values, BH q-values and verdicts for every row, within each section
-/// (the pooled rows, `all`, form their own family).
-///
-/// Pairs sharing a ligand share its exposure (the same `T`), and pairs
-/// sharing senders share neighbourhoods, so their tests are positively
-/// correlated. BH stays valid under positive regression dependence (PRDS;
-/// Benjamini & Yekutieli 2001, Ann Stat 29:1165), which one-sided normal
-/// tests with non-negative correlations satisfy; for the two-sided effect
-/// test it is an approximation. `ligand_q` asks the coarser question with
-/// one test per ligand, so the strongest correlation, within a ligand, stays
-/// inside a family: each ligand's headline p are combined by Simes
-/// (`min_r p_(r) k / r` over its `k` pairs, valid under PRDS) and BH runs
-/// over ligands. `n_pairs_same_ligand` is that `k`.
-///
-/// The control (receptor-negative receivers, and the contrast with them) is
-/// corrected only among the pairs whose effect is significant, and is NaN
-/// for the rest: a control decides a verdict only beside a significant
-/// effect, and over every pair its q would rest on what unrelated pairs in
-/// the table happen to show.
-pub fn report(rows: &mut [EffectRow], opts: &ReportOpts) {
+/// p-values, co-expression's local fdr and warnings for every row, within
+/// each section (the pooled rows, `all`, form their own family). `min_arm`
+/// is [`super::options::EffectOpts::min_arm`], to say why a pair is not
+/// estimable.
+pub fn report(rows: &mut [EffectRow], min_arm: usize) {
     let mut by_section: std::collections::HashMap<Box<str>, Vec<usize>> = Default::default();
     for (i, r) in rows.iter().enumerate() {
         by_section.entry(r.section.clone()).or_default().push(i);
     }
-    for idx in by_section.values() {
-        let col = |g: &dyn Fn(&EffectRow) -> f64| -> Vec<f64> {
-            idx.iter().map(|&i| g(&rows[i])).collect()
-        };
-        let pe = col(&|r| r.effects.competent.p());
-        let pc = col(&|r| upper_normal_p(r.coexpr_log_or / r.coexpr_se));
-        let qe = bh(&pe);
-        let qc = bh(&pc);
-        let control = |g: &dyn Fn(&EffectRow) -> f64| -> Vec<f64> {
-            let p: Vec<f64> = col(g)
-                .into_iter()
-                .zip(&qe)
-                .map(|(p, &q)| if q < opts.fdr { p } else { f64::NAN })
-                .collect();
-            bh(&p)
-        };
-        let q1 = control(&|r| r.effects.effect.p());
-        let q3 = control(&|r| r.effects.incompetent.p());
-        let mut by_ligand: std::collections::HashMap<String, Vec<usize>> = Default::default();
-        for (k, &i) in idx.iter().enumerate() {
-            by_ligand
-                .entry(rows[i].ligand.to_ascii_uppercase())
-                .or_default()
-                .push(k);
-        }
-        let families: Vec<&Vec<usize>> = by_ligand.values().collect();
-        let simes_p: Vec<f64> = families
+    for (section, idx) in &by_section {
+        let coexpr_z: Vec<f64> = idx
             .iter()
-            .map(|ks| simes(&ks.iter().map(|&k| pe[k]).collect::<Vec<_>>()))
+            .map(|&i| rows[i].coexpr_log_or / rows[i].coexpr_se)
             .collect();
-        let ql = bh(&simes_p);
-        for (g, ks) in families.iter().enumerate() {
-            for &k in ks.iter() {
-                let r = &mut rows[idx[k]];
-                r.ligand_q = ql[g];
-                r.n_pairs_same_ligand = ks.len();
-            }
+        let (coexpr_lfdr, coexpr_lfdr_theoretical_null) =
+            coexpression_local_fdr(section, &coexpr_z);
+        let ligands: Vec<String> = idx
+            .iter()
+            .map(|&i| rows[i].ligand.to_ascii_uppercase())
+            .collect();
+        let mut pairs_of_ligand: std::collections::HashMap<&str, usize> = Default::default();
+        for l in &ligands {
+            *pairs_of_ligand.entry(l).or_default() += 1;
         }
         for (k, &i) in idx.iter().enumerate() {
             let r = &mut rows[i];
-            r.effect_dr_p = pe[k];
-            r.effect_dr_q = qe[k];
-            r.coexpr_p = pc[k];
-            r.coexpr_q = qc[k];
-            r.effect_dr_contrast_q = q1[k];
-            r.effect_dr_incompetent_q = q3[k];
+            r.n_pairs_same_ligand = pairs_of_ligand[ligands[k].as_str()];
+            r.coexpr_lfdr = coexpr_lfdr[k];
+            r.coexpr_lfdr_theoretical_null = coexpr_lfdr_theoretical_null[k];
+            r.coexpr_p = upper_normal_p(coexpr_z[k]);
+            r.effect_dr_p = r.effects.competent.p();
+            r.warnings = warnings(r, min_arm);
         }
     }
-    for r in rows.iter_mut() {
-        judge(r, opts);
+}
+
+/// Co-expression's local fdr over one section's scores `z` (one-sided,
+/// positive), under the null fitted to their bulk and under `N(0, 1)`; NaN
+/// in a section too small to fit, and under the fitted null where the bulk
+/// has no spread.
+fn coexpression_local_fdr(section: &str, z: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let finite = z.iter().filter(|x| x.is_finite()).count();
+    if finite < MIN_STATISTICS_FOR_LOCAL_FDR {
+        log::info!(
+            "co-expression, section {section}: {finite} scores, too few for a local fdr \
+             ({MIN_STATISTICS_FOR_LOCAL_FDR} needed)"
+        );
+        return (vec![f64::NAN; z.len()], vec![f64::NAN; z.len()]);
     }
-}
-
-/// Verdict and warnings of one row from its q-values and diagnostics.
-fn judge(row: &mut EffectRow, opts: &ReportOpts) {
-    let head = row.effects.competent;
-    let controls = failed_controls(row, opts);
-    let ev = Evidence {
-        estimable: head.theta.is_finite() && head.se.is_finite(),
-        effect: row.effect_dr_q < opts.fdr,
-        coexpr: row.coexpr_q < opts.fdr,
-        control_failed: controls.iter().any(|c| c.0),
-        confounded: row.exposure_eta2 >= opts.max_exposure_eta2,
+    let theoretical = two_groups(z, NormalNull::THEORETICAL);
+    let empirical = match NormalNull::empirical(z) {
+        Some(null) => {
+            let fit = two_groups(z, null);
+            log::info!(
+                "co-expression, section {section}: null N({:.2}, {:.2}²), null share {:.2}, \
+                 over {finite} scores",
+                null.mean,
+                null.sd,
+                fit.null_share
+            );
+            fit.lfdr
+        }
+        None => {
+            log::info!("co-expression, section {section}: no spread in the bulk, no fitted null");
+            vec![f64::NAN; z.len()]
+        }
     };
-    row.verdict = verdict(ev);
-    row.warnings = warnings(row, ev, &controls, opts);
-}
-
-/// A condition of a row and the warning it raises when it holds.
-type Flag = (bool, &'static str);
-
-/// Beside a significant effect, the effect must exceed the negative
-/// control, the same way, and a comparison that could not run has not held.
-/// A hidden field moves the control too, so its being significant does not
-/// rule the effect out: it is reported ([`control_notes`]), and what decides
-/// is whether the effect is larger.
-fn failed_controls(row: &EffectRow, opts: &ReportOpts) -> [Flag; 2] {
-    let sig = |q: f64| q < opts.fdr;
-    let head = row.effects.competent;
-    let effect = sig(row.effect_dr_q);
-    let unchecked = |q: f64| effect && q.is_nan();
-    let exceeds = |q: f64, over: Estimate| sig(q) && over.theta * head.theta > 0.0;
-    let beaten = |q: f64, over: Estimate| effect && !q.is_nan() && !exceeds(q, over);
-    let over_negative_q = row.effect_dr_contrast_q;
-    [
-        (
-            unchecked(over_negative_q),
-            "receptor-negative receivers could not be checked",
-        ),
-        (
-            beaten(over_negative_q, row.effects.effect),
-            "the effect does not exceed the one in receptor-negative receivers",
-        ),
-    ]
-}
-
-/// The negative control significant on its own: reported, deciding nothing.
-fn control_notes(row: &EffectRow, opts: &ReportOpts) -> [Flag; 1] {
-    [(
-        row.effect_dr_incompetent_q < opts.fdr,
-        "receptor-negative receivers respond",
-    )]
+    (empirical, theoretical.lfdr)
 }
 
 /// Why the row's competent effect has no estimate.
-fn not_estimable_reason(row: &EffectRow, opts: &ReportOpts) -> String {
+fn not_estimable_reason(row: &EffectRow, min_arm: usize) -> String {
     let head = row.effects.competent;
     if row.n_competent == 0 {
         "not estimable: no receptor-competent receivers".into()
-    } else if thin_arm(opts.min_arm, head.n, head.n_treated) {
+    } else if thin_arm(min_arm, head.n, head.n_treated) {
         format!(
             "not estimable: thin arm ({} exposed, {} unexposed competent receivers; \
-             internal guard min_arm {}, see outputs.lra.settings in the manifest)",
+             internal guard min_arm {min_arm}, see outputs.lra.settings in the manifest)",
             head.n_treated,
             head.n.saturating_sub(head.n_treated),
-            opts.min_arm
         )
     } else if head.df == ONE_CLUSTER_DF {
         "not estimable: the competent receivers lie in one variance cluster (spatial \
@@ -211,36 +116,17 @@ fn not_estimable_reason(row: &EffectRow, opts: &ReportOpts) -> String {
     }
 }
 
-/// The row's warnings, joined: why it has no estimate, what confounds it, the
-/// control it failed, then the control responding.
-fn warnings(row: &EffectRow, ev: Evidence, controls: &[Flag], opts: &ReportOpts) -> String {
-    let mut w: Vec<String> = Vec::new();
-    if !ev.estimable {
-        w.push(not_estimable_reason(row, opts));
+/// The row's warnings: why it has no estimate, or that its SE could not be
+/// widened by the tile jackknife.
+fn warnings(row: &EffectRow, min_arm: usize) -> String {
+    let head = row.effects.competent;
+    if !(head.theta.is_finite() && head.se.is_finite()) {
+        not_estimable_reason(row, min_arm)
+    } else if row.jackknife.failed() {
+        "the tile jackknife could not run (deleting a tile leaves an arm thin): its SE is \
+         the clustered one, likely too small for a region in few tiles"
+            .into()
+    } else {
+        String::new()
     }
-    if ev.estimable && row.jackknife.failed() {
-        w.push(
-            "the tile jackknife could not run (deleting a tile leaves an arm thin): its SE \
-             is the clustered one, likely too small for a region in few tiles"
-                .into(),
-        );
-    }
-    if ev.confounded {
-        w.push(format!(
-            "exposure {:.0}% explained by the dominant neighbour's identity: the effect \
-             cannot be told from neighbour cell type",
-            100.0 * row.exposure_eta2
-        ));
-        if ev.coexpr {
-            w.push("co-expression is likely a cell-type artefact".into());
-        }
-    }
-    w.extend(
-        controls
-            .iter()
-            .chain(&control_notes(row, opts))
-            .filter(|c| c.0)
-            .map(|c| c.1.to_string()),
-    );
-    w.join("; ")
 }

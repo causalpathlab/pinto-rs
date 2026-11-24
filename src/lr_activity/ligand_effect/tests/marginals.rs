@@ -4,7 +4,7 @@
 
 use super::{lattice, type_names};
 use crate::lr_activity::ligand_effect::baselines::{
-    baselines, marginals, CellTypeTest, TypeLabels, TypeSource, PERMUTATIONS,
+    baselines, bh, marginals, CellTypeTest, TypeLabels, TypeSource, PERMUTATIONS,
 };
 use crate::lr_activity::ligand_effect::effects::ScopeEffects;
 use crate::lr_activity::ligand_effect::inference::Estimate;
@@ -274,11 +274,10 @@ fn the_flag_adds_the_marginal_columns_and_nothing_else() {
         "effect_dr_se",
         "effect_dr_df",
         "effect_dr_p",
-        "effect_dr_q",
         "coexpr_p",
-        "coexpr_q",
+        "coexpr_lfdr",
+        "coexpr_lfdr_theoretical_null",
         "n_pairs_same_ligand",
-        "ligand_q",
         "effect_dr_section",
         "effect_dr_section_se",
         "effect_dr_spatial",
@@ -289,9 +288,12 @@ fn the_flag_adds_the_marginal_columns_and_nothing_else() {
         "effect_dr_nospill_se",
         "effect_dr_incompetent",
         "effect_dr_incompetent_se",
-        "effect_dr_incompetent_q",
+        "effect_dr_incompetent_df",
+        "effect_dr_incompetent_p",
         "effect_dr_contrast",
         "effect_dr_contrast_se",
+        "effect_dr_contrast_df",
+        "effect_dr_contrast_p",
         "effect_dr_vs_rest",
         "effect_dr_vs_rest_se",
         "effect_dr_vs_rest_df",
@@ -302,15 +304,12 @@ fn the_flag_adds_the_marginal_columns_and_nothing_else() {
         "effect_dr_log10_bf",
         "tau_top",
         "tau_top_weight",
-        "effect_dr_contrast_q",
         "mean_overlap",
         "overlap_ess",
         "near_determined_share",
         "exposure_eta2",
         "n_competent_bins",
         "n_incompetent_bins",
-        "verdict",
-        "verdict_note",
         "warnings",
         "effect_dr_lo",
         "effect_dr_hi",
@@ -406,7 +405,7 @@ fn the_type_pair_table_has_a_row_per_tested_type_pair() {
     let (p, q) = (&x[7], &x[8]);
     assert!(p.iter().zip(q).all(|(p, q)| q >= p && *q <= 1.0));
     // BH within each pair's own type pairs, not over the table.
-    let own = crate::lr_activity::ligand_effect::report::bh(&p[..tested]);
+    let own = bh(&p[..tested]);
     for (a, b) in q[..tested].iter().zip(&own) {
         assert!((a - b).abs() < 1e-6, "{a} {b}");
     }
@@ -517,4 +516,29 @@ fn the_permutations_need_the_baselines_and_one_at_least() {
     assert!(parse(&["--marginal-baselines", "--marginal-permutations", "1"]).is_ok());
     assert!(parse(&["--marginal-baselines"]).is_ok());
     assert!(parse(&[]).is_ok(), "the default needs no flag");
+}
+
+/// The cell-type baseline's BH, as its published method corrects.
+#[test]
+fn bh_known_vectors() {
+    assert!(bh_close(&bh(&[0.01, 0.02, 0.03, 0.04, 0.05]), &[0.05; 5]));
+    // Sorted 0.005, 0.01, 0.03, 0.04 → raw 0.02, 0.02, 0.04, 0.04.
+    assert!(bh_close(
+        &bh(&[0.01, 0.04, 0.03, 0.005]),
+        &[0.02, 0.04, 0.04, 0.02]
+    ));
+    // The running minimum from the largest p down.
+    assert!(bh_close(&bh(&[0.2, 0.1, 0.09]), &[0.2, 0.15, 0.15]));
+    // NaN is left out of m.
+    assert!(bh_close(
+        &bh(&[0.5, f64::NAN, 0.01]),
+        &[0.5, f64::NAN, 0.02]
+    ));
+}
+
+fn bh_close(a: &[f64], b: &[f64]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| (x.is_nan() && y.is_nan()) || (x - y).abs() < 1e-12)
 }

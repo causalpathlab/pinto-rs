@@ -9,7 +9,7 @@
 //!
 //! A subset never writes over the full table: it goes to
 //! `{out}.lra.only-<tag>.parquet` ([`tag`]), and the manifest records it
-//! apart (`outputs.lra.subsets`). Its q-values are corrected within the
+//! apart (`outputs.lra.subsets`). Its local fdrs are fitted within the
 //! subset only, which its `q_scope` column says.
 
 use super::pairs::Pair;
@@ -101,7 +101,7 @@ pub fn tag(list: &[Box<str>]) -> String {
 
 /// What a subset table's `q_scope` column says.
 pub fn q_scope(n: usize, of: usize) -> String {
-    format!("q corrected within the --only subset ({n} of {of} pairs)")
+    format!("co-expression lfdr fitted within the --only subset ({n} of {of} pairs)")
 }
 
 /// Which of `pairs` `wanted` names; an entry none answers is an error

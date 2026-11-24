@@ -3,8 +3,7 @@
 
 use super::super::lra::{self as lra_layer, LraView, PairShow, Sort};
 use super::{value_enum, Open};
-use crate::lr_activity::ligand_effect::output::CONTROLS;
-use crate::lr_activity::ligand_effect::verdict::Verdict;
+use crate::lr_activity::ligand_effect::output::{has_estimate, CONTROLS};
 use crate::lr_activity::outputs::opt_finite;
 use crate::mcp::shown_path;
 use legume_mcp::{Call, Content};
@@ -19,7 +18,6 @@ const LIST: usize = 20;
 #[serde(default, deny_unknown_fields)]
 pub(in crate::view) struct LraArgs {
     table: Option<String>,
-    verdict: Option<String>,
     search: Option<String>,
     sort: Option<String>,
     limit: Option<usize>,
@@ -62,18 +60,6 @@ impl Open {
         // What changes, checked before any of it is kept.
         let v = self.lra.as_mut().expect("read above");
         let mut filter = v.filter().clone();
-        if let Some(code) = a.verdict.as_deref() {
-            filter.verdict = match code {
-                "" | "all" => None,
-                code => Some(code.parse().map_err(|_| {
-                    let codes: Vec<&str> = Verdict::ALL.iter().map(|v| v.code()).collect();
-                    anyhow::anyhow!(
-                        "verdict {code:?}: one of {}, or \"\" for all",
-                        codes.join(", ")
-                    )
-                })?),
-            };
-        }
         if let Some(search) = &a.search {
             filter.search = search.trim().to_string();
         }
@@ -124,17 +110,16 @@ impl Open {
         Ok(self.lra_reply(a.limit.unwrap_or(LIST)))
     }
 
-    /// The lra layer as `view_lra` says it: the table, the verdict counts,
+    /// The lra layer as `view_lra` says it: the table, how many pairs,
     /// the pairs listed, and the pair selected.
     fn lra_reply(&self, limit: usize) -> Value {
         let v = self.lra.as_ref().expect("the layer is read");
         let table = v.table();
         let rows = &table.rows;
-        let counts: serde_json::Map<String, Value> =
-            Verdict::counts(rows.iter().map(|r| r.verdict))
-                .iter()
-                .map(|(v, n)| (v.code().into(), (*n).into()))
-                .collect();
+        let estimable = rows
+            .iter()
+            .filter(|r| has_estimate(r.effect, r.effect_dr_p))
+            .count();
         let shown = v.visible();
         let list: Vec<Value> = shown
             .iter()
@@ -143,9 +128,8 @@ impl Open {
                 let r = &rows[i];
                 json!({
                     "pair": r.name(),
-                    "verdict": r.verdict.code(),
                     "change": lra_layer::change(r),
-                    "q": opt_finite(r.effect_dr_q),
+                    "p": opt_finite(r.effect_dr_p),
                     "marked": v.marked.contains(&r.name()),
                 })
             })
@@ -154,22 +138,20 @@ impl Open {
         let selected = v.selected_row().map(|r| {
             let mut out = json!({
                 "pair": r.name(),
-                "verdict": r.verdict.code(),
-                "note": r.note,
                 "warnings": r.warnings,
                 "change": lra_layer::change(r),
                 "effect_dr": opt_finite(r.effect),
                 "effect_dr_se": opt_finite(r.effect_dr_se),
-                "q": opt_finite(r.effect_dr_q),
-                "coexpr_q": opt_finite(r.coexpr_q),
-                "subset_corrected": table.subset_corrected(),
+                "effect_dr_p": opt_finite(r.effect_dr_p),
+                "coexpr_lfdr": opt_finite(r.coexpr_lfdr),
+                "subset_fitted": table.subset_fitted(),
                 "threshold": opt_finite(r.threshold),
                 "tau_top": opt_finite(r.tau_top),
                 "tau_top_weight": opt_finite(r.tau_top_weight),
                 "controls": CONTROLS.iter().zip(&r.controls).map(|(spec, c)| json!({
                     "control": spec.key,
                     "effect_minus_control": opt_finite(c.over),
-                    "q": opt_finite(c.q),
+                    "p": opt_finite(c.p),
                 })).collect::<Vec<_>>(),
                 "receivers": r.n_receivers,
                 "competent": r.n_competent,
@@ -201,9 +183,8 @@ impl Open {
             "q_scope": q_scope,
             "tables": v.tables.iter().map(|t| json!({"table": t.label(), "path": shown_path(&t.path)})).collect::<Vec<_>>(),
             "pairs": rows.len(),
-            "verdicts": counts,
+            "estimable": estimable,
             "filter": {
-                "verdict": f.verdict.map(|v| v.code()),
                 "search": f.search,
                 "sort": f.sort.name(),
             },
@@ -217,12 +198,14 @@ impl Open {
                         tau_top: the threshold the average weighs most, at weight \
                         tau_top_weight; threshold: the one the counts and the map read; \
                         controls: the effect minus the negative control \
-                        (receptor-negative receivers) as a log rate ratio, with its two-sided q \
-                        (so a small q with a negative difference falls short of the \
-                        control; verdict and warnings give the call), tested among the \
-                        pairs with an effect: null for the rest, for a control that could \
-                        not be checked, and in a table from before them; \
-                        q: Benjamini-Hochberg over the table's pairs (q_scope). With \
+                        (receptor-negative receivers) as a log rate ratio, with its \
+                        two-sided p (a small p with a negative difference falls short of \
+                        the control): null for a control that could not be checked; \
+                        p: the two-sided p of the effect, its SE widened by a tile \
+                        jackknife; coexpr_lfdr: co-expression's local false discovery \
+                        rate under the null fitted to the table's pairs (q_scope), null \
+                        when too few pairs to fit it; warnings: why a pair has no \
+                        estimate. lra judges nothing; the reader decides. With \
                         a pair, view_map draws it: senders (ligand+), receivers exposed or not \
                         (contact exposure above threshold) and receptor+ or not; show: exposure \
                         draws the exposure itself. view_export curve: true writes its \

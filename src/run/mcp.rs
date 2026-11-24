@@ -969,8 +969,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              manifest), each shard its own job, then run_lra_merge writes the tables. The \
              co-expression methods \
              need an lc run and lr_pairs. Runs as a background job unless asked (tens of minutes \
-             on a large whole tissue; job_status shows how many pairs are done); the reply when done holds the verdict counts, the pairs \
-             whose effect survived the controls (percent change with its 95% CI, q) and the files. Called again with the \
+             on a large whole tissue; job_status shows how many pairs are done); the reply when done holds how many pairs have an \
+             estimate, those with the smallest p (percent change with its 95% CI, p) and the files. Called again with the \
              same run and out once done, it reads the tables instead of running; a call asking \
              for other options than those the manifest records for them is refused. Never \
              written over.",
@@ -1044,10 +1044,10 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              shards (the same settings and pairs, each shard once, every pair once), and writes \
              the tables a run_lra without shard writes, {out}.lra.parquet and \
              {out}.lra.curve.parquet (and {out}.lra.celltype.parquet when the shards ran \
-             marginal_baselines), the q-values and verdicts over every pair, recorded in the \
+             marginal_baselines), the p-values and co-expression's local fdr over every pair, recorded in the \
              run's manifest (else {out}.pinto.json). Runs as a background job unless asked; the \
-             reply when done is run_lra's: the verdict counts, the pairs whose effect survived \
-             the controls and the files. Called again with the same out once done, it reads the \
+             reply when done is run_lra's: how many pairs have an estimate, those with the \
+             smallest p and the files. Called again with the same out once done, it reads the \
              tables instead of running. Never written over.",
             json!({
                 "type": "object",

@@ -43,7 +43,7 @@
 //! Permutations run in seeded chunks, a round of chunks in parallel, so a
 //! run is reproducible whatever the thread count.
 //!
-//! **Cost.** The permutations stop early once the verdict at 5% is settled
+//! **Cost.** The permutations stop early once the side of 5% is settled
 //! (curtailed sampling, the sequential idea of Besag & Clifford 1991,
 //! Biometrika 78:301): after each round, when every statistic already has
 //! so many exceedances that even none in the remaining permutations would
@@ -56,7 +56,6 @@
 //! a few thousand receivers.
 
 use super::inference::upper_normal_p;
-use super::report::bh;
 use super::tissue::Tissue;
 use crate::lr_activity::edge_scores::jeffreys_log_odds;
 use crate::lr_activity::input::UNASSIGNED;
@@ -236,7 +235,7 @@ fn perm_p(exceed: usize, perms: usize) -> f64 {
 /// Run `total` permutations in chunks, a round of [`ROUND`] at a time in
 /// parallel: `f(rng, k)` handles `k` permutations and returns its
 /// exceedance counts, which are summed. After each round, `settled(counts)`
-/// says whether the verdict can no longer change; then the rest are
+/// says whether the side of 5% can no longer change; then the rest are
 /// skipped. Returns the counts and the permutations run.
 fn permuted<F>(
     seed: u64,
@@ -590,4 +589,20 @@ pub fn coexpression(
     }
     let (lor, se) = jeffreys_log_odds(n, n11, nl, nr);
     (lor as f64, se as f64)
+}
+
+/// Benjamini–Hochberg q-values, as the cell-type baseline's published
+/// method corrects its type pairs. Non-finite p are left out of the count
+/// and get NaN.
+pub fn bh(p: &[f64]) -> Vec<f64> {
+    let mut idx: Vec<usize> = (0..p.len()).filter(|&i| p[i].is_finite()).collect();
+    idx.sort_by(|&a, &b| p[a].total_cmp(&p[b]));
+    let m = idx.len() as f64;
+    let mut q = vec![f64::NAN; p.len()];
+    let mut run = 1.0f64;
+    for (r, &i) in idx.iter().enumerate().rev() {
+        run = run.min(p[i] * m / (r + 1) as f64);
+        q[i] = run;
+    }
+    q
 }

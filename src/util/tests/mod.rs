@@ -10,6 +10,7 @@ mod graph_augmentation;
 mod graph_coarsen;
 mod ignore_batch;
 mod knn_resolution;
+mod local_fdr;
 mod log_normalize;
 mod manifest_update;
 mod metadata;

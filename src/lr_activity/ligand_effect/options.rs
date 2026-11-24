@@ -121,7 +121,7 @@ impl EffectOpts {
 /// Whether `n` receivers, `treated`
 /// of them exposed, leave either arm under `min_arm`: the arm guard
 /// ([`EffectOpts::guard`]), the fits skipped as hopeless ([`super::fits::Reads`]) and
-/// the verdict note all read this one rule.
+/// the warnings all read this one rule.
 pub fn thin_arm(min_arm: usize, n: usize, treated: usize) -> bool {
     treated < min_arm || n.saturating_sub(treated) < min_arm
 }

@@ -75,10 +75,11 @@ impl Jackknife {
     };
 
     /// `e` with its competent effect's SE, the negative-control contrast's
-    /// (competent less incompetent, which the verdict tests the effect
-    /// against) and the contrast with the rest scaled up by the ratios,
-    /// never down: the jackknife adds the nuisance error the clustered SE
-    /// leaves out, and a ratio below 1 is its own noise.
+    /// (competent less incompetent, which says whether the effect is
+    /// specific to receptor-carrying receivers) and the contrast with the
+    /// rest scaled up by the ratios, never down: the jackknife adds the
+    /// nuisance error the clustered SE leaves out, and a ratio below 1 is its
+    /// own noise.
     pub fn widen(&self, e: &mut ScopeEffects) {
         let scale = |x: &mut Estimate, r: f64| {
             if r.is_finite() && r > 1.0 {
@@ -220,7 +221,7 @@ fn tiles_of(tissue: &Tissue, rows: Rows<'_>, inside: &[u32]) -> Vec<Vec<u32>> {
 /// The estimates the tile jackknife gives an SE, in the order of
 /// [`Replicates`]: the headline (doubly robust), overlap weights alone, the
 /// outcome regression alone, the unadjusted difference, and the headline's
-/// contrasts the verdict reads beside it, with the incompetent receivers
+/// contrasts reported beside it, with the incompetent receivers
 /// and with the rest of the tissue.
 pub const ESTIMATORS: [fn(&ScopeEffects) -> Estimate; 6] = [
     |e| e.competent,

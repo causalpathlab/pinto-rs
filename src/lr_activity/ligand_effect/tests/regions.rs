@@ -46,7 +46,6 @@ use crate::lr_activity::ligand_effect::output::sim_summary;
 use crate::lr_activity::ligand_effect::pipeline::planted_region;
 use crate::lr_activity::ligand_effect::simulate::{Scenario, SimRow};
 use crate::lr_activity::ligand_effect::tissue::{Tissue, TissueInputs, TissueOpts};
-use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::util::common::Mat;
 
 /// A grid, its left half region R1 and its right half R2.
@@ -116,7 +115,6 @@ pub(super) fn planted_run(code: u32) -> SimRow {
         incompetent: e,
         steps: [e; 3],
         contrast: e,
-        verdict: Verdict::InsufficientData,
         misclassified: nan,
         baselines: Baselines {
             celltype_score: nan,

@@ -48,9 +48,10 @@
 use crate::cell_activity_graph_embedding::pb_frame::majority_label;
 use crate::link_community::profiles::coarsen_cell_expression_dense;
 use crate::util::ablation::{dense_ids, group};
-use crate::util::common::{jackknife_se, log_normalize, quantile_sorted, upper_median, Mat};
+use crate::util::common::{jackknife_se, log_normalize, Mat};
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::fold_edges_to_super;
+use crate::util::local_fdr::{two_groups, NormalNull};
 use data_beans::sparse_io_vector::SparseIoVec;
 use log::info;
 use rayon::prelude::*;
@@ -439,88 +440,17 @@ pub fn expected_visits(features: &[usize], pi: Option<&[f32]>) -> usize {
     }
 }
 
-fn std_normal_pdf(z: f64) -> f64 {
-    (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt()
-}
-
-/// `π_g = 1 − lfdr_g` from the two-group model on `t`, with the null share
-/// `π₀`. See the module docs.
+/// `π_g = 1 − lfdr_g` from the two-group model on `t`
+/// ([`crate::util::local_fdr`]: the empirical null, signal above it only),
+/// with the null share `π₀`. Every feature is kept (`π = 1`, `π₀ = 0`) when
+/// the model cannot be fitted: fewer than three, or no spread.
 pub fn two_group_inclusion(t: &[f64]) -> (Vec<f32>, f64) {
-    let n = t.len();
-    if n < 3 {
-        return (vec![1.0; n], 0.0);
-    }
-    let mut s = t.to_vec();
-    s.sort_by(f64::total_cmp);
-    let at = |q: f64| quantile_sorted(&s, q).unwrap_or(0.0);
-    let med = at(0.5);
-    let mut dev: Vec<f64> = t.iter().map(|v| (v - med).abs()).collect();
-    let mad = 1.4826 * upper_median(&mut dev).unwrap_or(0.0);
-    if mad <= 0.0 {
-        return (vec![1.0; n], 0.0);
-    }
-    // the bulk within one null sd holds 68.27% of the null
-    let bulk = t.iter().filter(|&&v| (v - med).abs() < mad).count() as f64 / n as f64;
-    let pi0 = (bulk / 0.682_689_492).min(1.0);
-    // mixture density: Gaussian kernel (Silverman's bandwidth) on a grid
-    let mean = t.iter().sum::<f64>() / n as f64;
-    let sd = (t.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0)).sqrt();
-    let (q1, q3) = (at(0.25), at(0.75));
-    let iqr = (q3 - q1) / 1.34;
-    let spread = if iqr > 0.0 { sd.min(iqr) } else { sd }.max(f64::EPSILON);
-    let h = 0.9 * spread * (n as f64).powf(-0.2);
-    // The grid spans the data, but no further than 40 null sds from the
-    // centre, where the null density has vanished (a t beyond it is
-    // signal whatever the mixture density, and is binned at the edge); its
-    // step is at most h/4 unless that takes more than GRID_MAX points, and
-    // the kernel is normalized on the grid, so the estimate stays a density
-    // however coarse the step.
-    const GRID_MAX: usize = 1 << 16;
-    let lo = s[0].max(med - 40.0 * mad) - 4.0 * h;
-    let hi = s[n - 1].min(med + 40.0 * mad) + 4.0 * h;
-    let grid = (((hi - lo) / (h / 4.0)).ceil() as usize + 1).clamp(2, GRID_MAX);
-    let step = (hi - lo) / (grid - 1) as f64;
-    let bin = |v: f64| (((v - lo) / step).round().max(0.0) as usize).min(grid - 1);
-    let mut hist = vec![0f64; grid];
-    for &v in t {
-        hist[bin(v)] += 1.0;
-    }
-    let reach = ((4.0 * h) / step).ceil() as usize;
-    let shape: Vec<f64> = (0..=reach)
-        .map(|d| std_normal_pdf(d as f64 * step / h))
-        .collect();
-    let mass = step * (2.0 * shape.iter().sum::<f64>() - shape[0]);
-    let kernel: Vec<f64> = shape.iter().map(|k| k / (n as f64 * mass)).collect();
-    let dens: Vec<f64> = (0..grid)
-        .into_par_iter()
-        .map(|x| {
-            let a = x.saturating_sub(reach);
-            let b = (x + reach).min(grid - 1);
-            (a..=b).map(|y| hist[y] * kernel[x.abs_diff(y)]).sum()
-        })
-        .collect();
-    let f_at = |v: f64| dens[bin(v)];
-    let raw: Vec<f64> = t
-        .iter()
-        .map(|&v| {
-            if v <= med {
-                return 0.0; // one-sided: only positive autocorrelation is signal
-            }
-            let f0 = std_normal_pdf((v - med) / mad) / mad;
-            let lfdr = (pi0 * f0 / f_at(v).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
-            1.0 - lfdr
-        })
-        .collect();
-    // non-decreasing in t: a feature never outranks a more autocorrelated one
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| t[a].total_cmp(&t[b]));
-    let mut pi = vec![0f32; n];
-    let mut run = 0f64;
-    for &g in &order {
-        run = run.max(raw[g]);
-        pi[g] = run as f32;
-    }
-    (pi, pi0)
+    let Some(null) = NormalNull::empirical(t) else {
+        return (vec![1.0; t.len()], 0.0);
+    };
+    let fit = two_groups(t, null);
+    let pi = fit.lfdr.iter().map(|&l| (1.0 - l) as f32).collect();
+    (pi, fit.null_share)
 }
 
 /// One section's edges as pairs of its own unit indices.

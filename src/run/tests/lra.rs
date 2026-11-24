@@ -543,10 +543,8 @@ fn write_effects(path: &str) {
     let section = s(&["all", "all", "all", "s1"]);
     let ligand = s(&["LIGB1", "LIGE1", "LIGF1", "LIGB1"]);
     let receptor = s(&["RECE1", "RECG1", "RECH1", "RECE1"]);
-    let verdict = s(&["supported", "no_evidence", "insufficient_data", "supported"]);
     let effect = [0.3f32, 0.01, f32::NAN, 0.4];
-    let p = [1e-6f32, 0.4, f32::NAN, 1e-4];
-    let q = [3.21e-5f32, 0.61, f32::NAN, 1e-3];
+    let p = [3.21e-5f32, 0.4, f32::NAN, 1e-4];
     let pct = [35.0f32, 1.0, f32::NAN, 49.0];
     let lo = [20.0f32, -5.0, f32::NAN, 10.0];
     let hi = [51.0f32, 7.0, f32::NAN, 90.0];
@@ -562,25 +560,22 @@ fn write_effects(path: &str) {
             ("section".into(), Column::Str(&section)),
             ("ligand".into(), Column::Str(&ligand)),
             ("receptor".into(), Column::Str(&receptor)),
-            ("verdict".into(), Column::Str(&verdict)),
-            ("verdict_note".into(), Column::Str(&blank)),
             ("warnings".into(), Column::Str(&blank)),
             ("effect_dr_se".into(), Column::F32(&zero)),
-            ("coexpr_q".into(), Column::F32(&zero)),
+            ("coexpr_lfdr".into(), Column::F32(&zero)),
             ("exposure_threshold".into(), Column::F32(&zero)),
             ("n_receivers".into(), Column::F32(&zero)),
             ("n_competent".into(), Column::F32(&zero)),
             ("n_exposed".into(), Column::F32(&zero)),
             ("effect_dr".into(), Column::F32(&effect)),
             ("effect_dr_p".into(), Column::F32(&p)),
-            ("effect_dr_q".into(), Column::F32(&q)),
             ("effect_dr_pct".into(), Column::F32(&pct)),
             ("effect_dr_pct_lo".into(), Column::F32(&lo)),
             ("effect_dr_pct_hi".into(), Column::F32(&hi)),
             ("tau_top".into(), Column::F32(&zero)),
             ("tau_top_weight".into(), Column::F32(&zero)),
             ("effect_dr_contrast".into(), Column::F32(&zero)),
-            ("effect_dr_contrast_q".into(), Column::F32(&zero)),
+            ("effect_dr_contrast_p".into(), Column::F32(&zero)),
             ("q_scope".into(), Column::Str(&all)),
         ],
     )
@@ -588,7 +583,7 @@ fn write_effects(path: &str) {
 }
 
 #[test]
-fn the_lra_reply_counts_verdicts_and_ranks_pairs() {
+fn the_lra_reply_counts_pairs_and_ranks_them_by_p() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("o.lra.parquet");
     write_effects(path.to_str().unwrap());
@@ -596,23 +591,15 @@ fn the_lra_reply_counts_verdicts_and_ranks_pairs() {
     assert_eq!(rows.len(), 3, "pooled rows only");
     let v = effects_summary(&rows);
     assert_eq!(v["pairs"], 3);
-    assert_eq!(v["verdicts"]["supported"], 1);
-    assert_eq!(v["verdicts"]["no_evidence"], 1);
-    assert_eq!(v["verdicts"]["insufficient_data"], 1);
-    assert_eq!(v["verdicts"]["control_failed"], 0);
-    assert_eq!(
-        v["verdicts"].as_object().unwrap().len(),
-        Verdict::ALL.len(),
-        "every verdict, none or not"
-    );
-    // Only pairs whose effect survived the controls.
+    assert_eq!(v["estimable"], 2);
+    // The estimable pairs, smallest p first.
     let top = v["top"].as_array().unwrap();
-    assert_eq!(top.len(), 1);
+    assert_eq!(top.len(), 2);
     assert_eq!(top[0]["ligand"], "LIGB1");
     assert_eq!(top[0]["receptor"], "RECE1");
-    assert_eq!(top[0]["verdict"], "supported");
     assert_eq!(top[0]["change"], "+35% (95% CI +20% to +51%)");
-    assert_eq!(top[0]["q"], 3.21e-5);
+    assert_eq!(top[0]["p"], 3.21e-5);
+    assert_eq!(top[1]["ligand"], "LIGE1");
 }
 
 /// `rejects` in the order of [`COMPARED`].

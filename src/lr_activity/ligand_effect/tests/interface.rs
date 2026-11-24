@@ -1,4 +1,4 @@
-//! What users see: the verdict vocabulary and file names.
+//! What users see: percent changes and file names.
 
 use super::lra_path;
 use crate::lr_activity::ligand_effect::effects::ScopeEffects;
@@ -6,87 +6,6 @@ use crate::lr_activity::ligand_effect::inference::Estimate;
 use crate::lr_activity::ligand_effect::output::{lra_simulate_path, write_effects, Q_SCOPE_ALL};
 use crate::lr_activity::ligand_effect::output::{percent_short, percent_text};
 use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
-use crate::lr_activity::ligand_effect::verdict;
-use crate::lr_activity::ligand_effect::verdict::{verdict_help, Evidence, Verdict};
-
-// * Verdicts
-
-#[test]
-fn every_verdict_has_one_code_and_a_note() {
-    let codes: Vec<&str> = Verdict::ALL.iter().map(|v| v.code()).collect();
-    assert_eq!(
-        codes,
-        [
-            "supported",
-            "effect_without_coexpression",
-            "colocation_only",
-            "no_evidence",
-            "control_failed",
-            "celltype_inseparable",
-            "insufficient_data",
-        ]
-    );
-    for (k, v) in Verdict::ALL.into_iter().enumerate() {
-        // `counts` indexes by `index`: it is the place in ALL.
-        assert_eq!(v.index(), k);
-        assert_eq!(Verdict::counts([v])[k], (v, 1));
-        assert_eq!(v.code().parse::<Verdict>().unwrap(), v);
-        assert!(
-            !v.note().is_empty() && !v.note().contains("  "),
-            "{}",
-            v.code()
-        );
-        assert!(v.code().chars().all(|c| c.is_ascii_lowercase() || c == '_'));
-    }
-    assert!("both".parse::<Verdict>().is_err());
-    // Every combination of evidence the judge can see lands on a verdict,
-    // and every verdict is reachable.
-    let mut seen = std::collections::HashSet::new();
-    for bits in 0..32u8 {
-        let e = Evidence {
-            estimable: bits & 1 != 0,
-            effect: bits & 2 != 0,
-            coexpr: bits & 4 != 0,
-            control_failed: bits & 8 != 0,
-            confounded: bits & 16 != 0,
-        };
-        seen.insert(verdict::verdict(e));
-    }
-    assert_eq!(seen.len(), Verdict::ALL.len());
-    let help = verdict_help();
-    assert_eq!(help.lines().count(), Verdict::ALL.len());
-    assert!(Verdict::ALL.iter().all(|v| help.contains(v.code())));
-}
-
-/// The README's verdict table lists every verdict, code and note, in order.
-#[test]
-fn readme_verdict_table_matches_the_enum() {
-    let readme = include_str!("../../../../README.md");
-    let table: Vec<(String, String)> = readme
-        .lines()
-        .filter_map(|l| {
-            let cells: Vec<&str> = l.split('|').map(str::trim).collect();
-            let code = cells.get(1)?.strip_prefix('`')?.strip_suffix('`')?;
-            code.parse::<Verdict>().ok()?;
-            Some((code.to_string(), cells.get(2)?.to_string()))
-        })
-        .collect();
-    let want: Vec<(String, String)> = Verdict::ALL
-        .iter()
-        .map(|v| (v.code().to_string(), v.note().to_string()))
-        .collect();
-    assert_eq!(table, want);
-    // The viewer's `v` steps through the verdicts in that order too.
-    let codes: Vec<&str> = Verdict::ALL.iter().map(|v| v.code()).collect();
-    let cycle = format!("with `v`/`V` ({}, or\nall)", codes.join(", "));
-    let flat = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(
-        flat(readme).contains(&flat(&cycle)),
-        "README's v/V cycle: {}",
-        flat(&cycle)
-    );
-}
-
 /// A log-rate effect as a percent change with its 95% interval.
 fn percent_change(e: &Estimate) -> String {
     let m = Moments::of(e);

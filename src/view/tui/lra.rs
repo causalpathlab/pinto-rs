@@ -1,6 +1,5 @@
 //! The lra layer in the terminal (`I`): the run's ligand-receptor pairs
-//! (`pinto lra`) listed in the panel, filtered by verdict and gene and
-//! sorted, the selected pair on the map (senders, and receivers exposed or
+//! (`pinto lra`) listed in the panel, searched by gene and sorted, the selected pair on the map (senders, and receivers exposed or
 //! not and receptor-competent or not, or the exposure itself), its
 //! threshold–response curve under the map, and `pinto lra --only` on the
 //! pairs marked or the one selected, run in the background as `pinto run`
@@ -10,13 +9,12 @@
 
 use super::super::gene::GeneMap;
 use super::super::lra::{
-    change, lra_command, lra_table, next_verdict, q_text, Filter, LraView, PairShow, TableRef,
+    change, lra_command, lra_table, probability_text, Filter, LraView, PairShow, TableRef,
 };
 use super::super::render::Style;
 use super::super::{curve, Level, StillPair};
 use super::{rgb, App, Pick};
 use crate::lr_activity::ligand_effect::output::{percent_short, strip_zeros, CONTROLS};
-use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::run::tui::{JobQueue, JobState, QueuedJob};
 use crate::tui::style;
 use legume_tui::save::Field;
@@ -27,7 +25,7 @@ use ratatui::DefaultTerminal;
 use std::path::{Path, PathBuf};
 
 pub const LRA_HELP: &[&str] = &[
-    " ↑ ↓ pair  v V verdict  o sort  / genes",
+    " ↑ ↓ pair  o sort  / genes",
     " space/m mark  M mark all shown",
     " L run lra --only: marked or this pair",
     " T next table  e exposure  c curve  X stop",
@@ -49,33 +47,6 @@ impl LraJob {
     /// Stop it, and wait until it has ended.
     pub fn stop(self) {
         let _ = self.queue.finish();
-    }
-}
-
-/// Columns of the list's verdict column: the longest [`short`] name (each
-/// is ASCII, so its bytes are its columns).
-pub(super) const VERDICT_W: usize = {
-    let (mut k, mut widest) = (0, 0);
-    while k < Verdict::ALL.len() {
-        let w = short(Verdict::ALL[k]).len();
-        if w > widest {
-            widest = w;
-        }
-        k += 1;
-    }
-    widest
-};
-
-/// A verdict in a few letters, for the list.
-pub(super) const fn short(v: Verdict) -> &'static str {
-    match v {
-        Verdict::Supported => "supported",
-        Verdict::EffectWithoutCoexpression => "effect",
-        Verdict::ColocationOnly => "coloc",
-        Verdict::NoEvidence => "none",
-        Verdict::ControlFailed => "ctrl fail",
-        Verdict::CelltypeInseparable => "celltype",
-        Verdict::InsufficientData => "thin",
     }
 }
 
@@ -196,8 +167,6 @@ impl App<'_> {
             _ if self.lra.is_none() => return Ok(false),
             KeyCode::Char(' ' | 'm') => self.mark_pair(),
             KeyCode::Char('M') => self.mark_shown(),
-            KeyCode::Char('v') => self.step_verdict(1),
-            KeyCode::Char('V') => self.step_verdict(-1),
             KeyCode::Char('o') => {
                 let sort = self.change_filter(|f| f.sort = f.sort.next()).sort;
                 self.status = format!("sorted by {}", sort.name());
@@ -250,16 +219,6 @@ impl App<'_> {
         }
     }
 
-    fn step_verdict(&mut self, by: isize) {
-        let verdict = self
-            .change_filter(|f| f.verdict = next_verdict(f.verdict, by))
-            .verdict;
-        self.status = match verdict {
-            Some(verdict) => format!("{}: {}", verdict.code(), verdict.note()),
-            None => "every verdict".into(),
-        };
-    }
-
     /// After the list changed: the cursor on the selected pair when it is
     /// still shown, else within the list.
     fn keep_cursor(&mut self) {
@@ -276,7 +235,7 @@ impl App<'_> {
         let Some(v) = self.lra.as_ref() else { return };
         let n = v.visible().len();
         if n == 0 {
-            self.status = "no pair matches: v V verdict, / genes".into();
+            self.status = "no pair matches: / genes".into();
             return;
         }
         let at = if v.selected.is_some() {
@@ -347,7 +306,7 @@ impl App<'_> {
     }
 
     /// `M`: mark every pair the filter shows, or, all marked already, unmark
-    /// them: a verdict or a gene's pairs in one key.
+    /// them: a gene's pairs in one key.
     fn mark_shown(&mut self) {
         let Some(v) = self.lra.as_mut() else { return };
         let names: Vec<String> = v.visible().iter().map(|&i| v.rows()[i].name()).collect();
@@ -485,7 +444,7 @@ impl App<'_> {
         };
         let table = v.table();
         let rows = &table.rows;
-        let subset = table.subset_corrected();
+        let subset = table.subset_fitted();
         out.push((
             Line::from(vec![
                 Span::styled(" pairs ", bold),
@@ -507,7 +466,7 @@ impl App<'_> {
         ));
         if subset {
             out.push((
-                Line::styled(" subset-corrected: q within this subset", dim),
+                Line::styled(" subset-fitted: coexpr lfdr within this subset", dim),
                 None,
             ));
         }
@@ -518,22 +477,6 @@ impl App<'_> {
             ));
         }
         let filter = v.filter();
-        let verdict = match filter.verdict {
-            Some(x) => format!(
-                "{} ({})",
-                x.code(),
-                Verdict::counts(rows.iter().map(|r| r.verdict))[x.index()].1
-            ),
-            None => "all".into(),
-        };
-        out.push((
-            Line::from(vec![
-                Span::styled(" verdict ", dim),
-                Span::raw(verdict),
-                Span::styled("  v V", dim),
-            ]),
-            None,
-        ));
         let search = match &self.lra_search {
             Some(f) => format!("{}▏", f.text),
             None if filter.search.is_empty() => "—".into(),
@@ -556,10 +499,10 @@ impl App<'_> {
         if let Some(row) = v.selected_row() {
             tail.push((Line::raw(""), None));
             tail.push((
-                Line::from(vec![
-                    Span::styled(format!(" {} → {}", row.ligand, row.receptor), bold),
-                    Span::raw(format!("  {}", row.verdict.code())),
-                ]),
+                Line::from(vec![Span::styled(
+                    format!(" {} → {}", row.ligand, row.receptor),
+                    bold,
+                )]),
                 None,
             ));
             // Prose, wrapped between words to the panel, at most `most`
@@ -580,12 +523,12 @@ impl App<'_> {
             };
             let plain = TStyle::default();
             prose(&change(row), plain, 2);
-            let corrected = if subset { " (subset-corrected)" } else { "" };
+            let fitted_within = if subset { " (subset-fitted)" } else { "" };
             prose(
                 &format!(
-                    "q {}{corrected} · coexpr q {}",
-                    q_text(row.effect_dr_q),
-                    q_text(row.coexpr_q)
+                    "p {} · coexpr lfdr {}{fitted_within}",
+                    probability_text(row.effect_dr_p),
+                    probability_text(row.coexpr_lfdr)
                 ),
                 plain,
                 2,
@@ -612,37 +555,26 @@ impl App<'_> {
                 plain,
                 2,
             );
-            // The effect against the control, signed, with its two-sided
-            // q: the verdict and the reasons say whether it passed.
-            if row.controls.iter().any(|c| c.q.is_finite()) {
+            // The effect against the control, signed, with its p.
+            if row.controls.iter().any(|c| c.p.is_finite()) {
                 let each: Vec<String> = CONTROLS
                     .iter()
                     .zip(&row.controls)
                     .map(|(spec, c)| {
                         let name = spec.short;
-                        if c.over.is_finite() && c.q.is_finite() {
+                        if c.over.is_finite() && c.p.is_finite() {
                             let pct = super::super::curve::pct(c.over);
                             let change = percent_short(pct, pct, pct);
-                            format!("{name} {change} q {}", q_text(c.q))
+                            format!("{name} {change} p {}", probability_text(c.p))
                         } else {
                             format!("{name} —")
                         }
                     })
                     .collect();
-                prose(
-                    &format!("effect − control{corrected}: {}", each.join(" · ")),
-                    plain,
-                    3,
-                );
+                prose(&format!("effect − control: {}", each.join(" · ")), plain, 3);
             }
-            // The pair's own reasons in full; the verdict's meaning when
-            // it has none.
-            let why = if row.warnings.is_empty() {
-                &row.note
-            } else {
-                &row.warnings
-            };
-            prose(why, dim, WHY_LINES);
+            // The pair's own warnings in full.
+            prose(&row.warnings, dim, WHY_LINES);
             match (v.shown(), v.show) {
                 (Some(on), PairShow::Classes) => {
                     tail.push((Line::styled(" map  e: exposure", dim), None));
@@ -685,21 +617,14 @@ impl App<'_> {
             // The columns first, the name in what they leave of the line
             // (`width + 1`, as the lines starting with a space).
             let right = format!(
-                " {:>7} {:>7} {:<VERDICT_W$}",
+                " {:>7} {:>7}",
                 percent_short(r.pct, r.pct_lo, r.pct_hi),
-                q_text(r.effect_dr_q),
-                short(r.verdict),
+                probability_text(r.effect_dr_p),
             );
             let name_w = (width + 1).saturating_sub(2 + right.chars().count()).max(8);
             let name = style::middle(&r.name(), name_w);
             let text = format!("{}{mark}{name:<name_w$}{right}", if at { "▸" } else { " " },);
-            let style = if at {
-                bold
-            } else if r.verdict == Verdict::Supported {
-                TStyle::default().fg(ratatui::style::Color::Green)
-            } else {
-                TStyle::default()
-            };
+            let style = if at { bold } else { TStyle::default() };
             out.push((Line::styled(text, style), Some(Pick::Pair(k))));
         }
         if shown.is_empty() {

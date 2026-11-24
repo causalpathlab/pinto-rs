@@ -551,7 +551,7 @@ fn record_tables(
 
 /// Write the effect and curve tables of `rows` (`n_pairs` pairs) under
 /// `out` (with `celltype` the per-type-pair table) and record them; the
-/// effect table's path and the q-values' scope.
+/// effect table's path and the local fdrs' scope.
 fn write_tables(
     out: &str,
     only: &[Box<str>],
@@ -601,7 +601,7 @@ fn print_run_summary(
     }
 }
 
-/// `--shard`: the shard's pairs' rows, before the q-values, to
+/// `--shard`: the shard's pairs' rows, before the local fdrs, to
 /// [`shard::path`]; no table, nothing recorded.
 fn write_shard(
     a: &Settings<'_>,
@@ -678,7 +678,7 @@ fn finish(
     mut rows: Vec<rows::EffectRow>,
     celltype: Option<Vec<output::CelltypeRow>>,
 ) -> anyhow::Result<String> {
-    report::report(&mut rows, &report::ReportOpts::default());
+    report::report(&mut rows, INTERNALS.min_arm);
     let (path, q_scope) = write_tables(out, only, record, n_pairs, &rows, celltype.as_deref())?;
     print_run_summary(&record.manifest, only, &rows, &path, &q_scope);
     Ok(path)

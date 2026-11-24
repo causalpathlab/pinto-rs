@@ -4,7 +4,6 @@ use super::compare::{comparison, is_null, scenario_groups};
 use crate::lr_activity::ligand_effect::inference::Estimate;
 use crate::lr_activity::ligand_effect::rows::{EffectRow, Moments};
 use crate::lr_activity::ligand_effect::simulate::{RegionRead, SimRow};
-use crate::lr_activity::ligand_effect::verdict::Verdict;
 
 /// Decimals to print a percent change and its interval with, from the
 /// largest of them: two under a percent (whole percents would read +0% to
@@ -54,8 +53,8 @@ pub fn percent_short(pct: f64, lo: f64, hi: f64) -> String {
     }
 }
 
-/// The few lines a run ends with: verdict counts over the pooled pairs,
-/// the pairs whose effect survived the controls, the table's path, and a
+/// The few lines a run ends with: how many pooled pairs have an estimate,
+/// those with the smallest p, the table's path, and a
 /// pointer to `pinto lra simulate` when this run has no power check.
 pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>) -> String {
     let pooled: Vec<PooledEffect> = rows
@@ -63,43 +62,32 @@ pub fn console_summary(rows: &[EffectRow], path: &str, power_check: Option<&str>
         .filter(|r| &*r.section == crate::lr_activity::ligand_effect::tissue::ALL_SECTIONS)
         .map(PooledEffect::from)
         .collect();
-    let counts: Vec<String> = Verdict::counts(pooled.iter().map(|r| r.verdict))
-        .iter()
-        .map(|(v, n)| format!("{n} {}", v.code()))
-        .collect();
-    let mut out = format!("lra: {} pairs: {}\n", pooled.len(), counts.join(", "));
-    let survived = rank_pooled(&pooled);
-    let top: Vec<String> = survived
+    let ranked = rank_pooled(&pooled);
+    let mut out = format!(
+        "lra: {} pairs, {} with an estimate\n",
+        pooled.len(),
+        ranked.len()
+    );
+    let top: Vec<String> = ranked
         .iter()
         .take(5)
         .map(|r| {
             format!(
-                "{}-{} {} {}",
+                "{}-{} {} p {:.1e}",
                 r.ligand,
                 r.receptor,
                 percent_text(r.pct, r.pct_lo, r.pct_hi),
-                r.verdict.code()
+                r.effect_dr_p
             )
         })
         .collect();
-    if top.is_empty() {
-        out += "  no pair's effect survived the controls\n";
-    } else {
-        out += &format!(
-            "  survived the controls: {}\n",
-            top[..top.len().min(3)].join("; ")
-        );
+    if !top.is_empty() {
+        out += &format!("  smallest p: {}\n", top[..top.len().min(3)].join("; "));
         if top.len() > 3 {
-            out += &format!("                         {}\n", top[3..].join("; "));
-        }
-        if survived.len() > top.len() {
-            out += &format!(
-                "                         and {} more in the table\n",
-                survived.len() - top.len()
-            );
+            out += &format!("              {}\n", top[3..].join("; "));
         }
     }
-    out += &format!("  table: {path} (verdict_note says why)");
+    out += &format!("  table: {path} (warnings say why a pair has no estimate)");
     match power_check {
         Some(p) => out += &format!("\n  power check: {p}"),
         None => {
@@ -176,13 +164,12 @@ fn sim_legend() -> String {
     out
 }
 
-/// A scenario's title line: runs, misclassified exposure and the verdict.
+/// A scenario's title line: runs and misclassified exposure.
 fn scenario_title(key: &str, g: &[&SimRow]) -> String {
     let miscl = g.iter().map(|r| r.misclassified).sum::<f64>() / g.len() as f64;
     format!(
-        "{key}: {} runs, misclassified exposure {miscl:.2}, verdict survived {}\n",
+        "{key}: {} runs, misclassified exposure {miscl:.2}\n",
         g.len(),
-        share(&g.iter().map(|r| r.verdict.survived()).collect::<Vec<_>>()),
     )
 }
 
@@ -238,10 +225,9 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
     )
 }
 
-/// Per scenario: a title line (runs, misclassified exposure, verdict
-/// survival), then one line each for the estimate, the unadjusted
-/// difference and the partial adjustments, with estimable share, bias and
-/// coverage against both truths, rejection rate (type I error or power)
+/// Per scenario: a title line (runs and misclassified exposure), then one
+/// line each for the estimate, the unadjusted difference and the partial
+/// adjustments, with estimable share, bias and coverage against both truths, rejection rate (type I error or power)
 /// and, under a planted effect, attenuation. Then the comparison
 /// ([`super::compare::comparison`]). The planted region, if any, goes by
 /// its name `planted`.
@@ -267,10 +253,8 @@ pub fn sim_summary(rows: &[SimRow], planted: Option<&str>) -> String {
 pub struct PooledEffect {
     pub ligand: Box<str>,
     pub receptor: Box<str>,
-    pub verdict: Verdict,
     pub effect: f64,
     pub effect_dr_p: f64,
-    pub effect_dr_q: f64,
     pub pct: f64,
     pub pct_lo: f64,
     pub pct_hi: f64,
@@ -282,10 +266,8 @@ impl From<&EffectRow> for PooledEffect {
         Self {
             ligand: r.ligand.clone(),
             receptor: r.receptor.clone(),
-            verdict: r.verdict,
             effect: r.effects.competent.theta,
             effect_dr_p: r.effect_dr_p,
-            effect_dr_q: r.effect_dr_q,
             pct: m.pct,
             pct_lo: m.pct_lo,
             pct_hi: m.pct_hi,
@@ -293,12 +275,18 @@ impl From<&EffectRow> for PooledEffect {
     }
 }
 
-/// The pooled rows ranked as the run summary ranks them: estimable
-/// headline effects by p.
+/// Whether a pooled row has an estimate: a headline effect and its p. What
+/// the run summary, `run_lra` and `view_lra` all count.
+pub fn has_estimate(effect: f64, effect_dr_p: f64) -> bool {
+    effect.is_finite() && effect_dr_p.is_finite()
+}
+
+/// The pooled rows ranked as the run summary ranks them: those with an
+/// estimate, by p.
 pub fn rank_pooled(rows: &[PooledEffect]) -> Vec<&PooledEffect> {
     let mut v: Vec<&PooledEffect> = rows
         .iter()
-        .filter(|r| r.effect.is_finite() && r.effect_dr_p.is_finite() && r.verdict.survived())
+        .filter(|r| has_estimate(r.effect, r.effect_dr_p))
         .collect();
     v.sort_by(|a, b| a.effect_dr_p.total_cmp(&b.effect_dr_p));
     v

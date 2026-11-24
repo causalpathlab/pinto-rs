@@ -1,6 +1,6 @@
 //! The lra layer of `pinto view`: a run's contact-effect tables (`pinto
 //! lra`'s full table and its `--only` subsets), their pooled pairs as a
-//! list to filter by verdict, search by gene and sort, and one pair on the
+//! list to search by gene and sort, and one pair on the
 //! map: each receiver's contact exposure to the ligand, exposed or not,
 //! receptor-competent or not, and the senders, computed as lra computes
 //! them ([`RunFrame`]); with the pair's threshold–response curve
@@ -24,7 +24,6 @@ use crate::lr_activity::ligand_effect::only;
 use crate::lr_activity::ligand_effect::output::{
     curve_beside, percent_text, read_curves, read_pair_rows, CurveRow, Curves, PairRow, Q_SCOPE_ALL,
 };
-use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::util::metadata::{LraOptions, LraSubset};
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
@@ -124,7 +123,7 @@ impl Run {
 pub struct Table {
     pub r: TableRef,
     pub rows: Vec<PairRow>,
-    /// Which pairs its q-values were corrected over (its `q_scope`
+    /// Which pairs its local fdrs were fitted over (its `q_scope`
     /// column).
     pub q_scope: Box<str>,
     curves: Curves,
@@ -147,8 +146,8 @@ impl Table {
         })
     }
 
-    /// Whether its q-values were corrected within a `--only` subset.
-    pub fn subset_corrected(&self) -> bool {
+    /// Whether its local fdrs were fitted within a `--only` subset.
+    pub fn subset_fitted(&self) -> bool {
         self.r.subset.is_some() || &*self.q_scope != Q_SCOPE_ALL
     }
 
@@ -177,9 +176,9 @@ impl Table {
 /// How the pair list is ordered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Sort {
-    /// Headline q, smallest first (then p).
+    /// Headline p, smallest first.
     #[default]
-    Q,
+    P,
     /// Largest change first, either sign.
     Effect,
     /// By ligand, then receptor.
@@ -189,9 +188,9 @@ pub enum Sort {
 impl Sort {
     pub fn next(self) -> Sort {
         match self {
-            Sort::Q => Sort::Effect,
+            Sort::P => Sort::Effect,
             Sort::Effect => Sort::Name,
-            Sort::Name => Sort::Q,
+            Sort::Name => Sort::P,
         }
     }
 
@@ -203,7 +202,6 @@ impl Sort {
 /// Which pairs the list shows, and in what order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Filter {
-    pub verdict: Option<Verdict>,
     /// Genes: each word must be in the ligand's or the receptor's name.
     pub search: String,
     pub sort: Sort,
@@ -220,14 +218,12 @@ impl Filter {
     }
 }
 
-/// Whether `row` passes the verdict `verdict` and every search word of
-/// `words` (upper case).
-fn passes(row: &PairRow, verdict: Option<Verdict>, words: &[String]) -> bool {
+/// Whether `row` passes every search word of `words` (upper case).
+fn passes(row: &PairRow, words: &[String]) -> bool {
     let (l, r) = &row.key;
-    verdict.is_none_or(|v| v == row.verdict)
-        && words
-            .iter()
-            .all(|w| l.contains(w.as_str()) || r.contains(w.as_str()))
+    words
+        .iter()
+        .all(|w| l.contains(w.as_str()) || r.contains(w.as_str()))
 }
 
 /// NaN last, whichever way a key sorts.
@@ -242,14 +238,12 @@ fn nan_last(a: f64, b: f64) -> std::cmp::Ordering {
 pub fn visible(rows: &[PairRow], f: &Filter) -> Vec<usize> {
     let words = f.words();
     let mut v: Vec<usize> = (0..rows.len())
-        .filter(|&i| passes(&rows[i], f.verdict, &words))
+        .filter(|&i| passes(&rows[i], &words))
         .collect();
     let name = |a: usize, b: usize| rows[a].key.cmp(&rows[b].key);
     match f.sort {
-        Sort::Q => v.sort_by(|&a, &b| {
-            nan_last(rows[a].effect_dr_q, rows[b].effect_dr_q)
-                .then_with(|| nan_last(rows[a].effect_dr_p, rows[b].effect_dr_p))
-                .then_with(|| name(a, b))
+        Sort::P => v.sort_by(|&a, &b| {
+            nan_last(rows[a].effect_dr_p, rows[b].effect_dr_p).then_with(|| name(a, b))
         }),
         Sort::Effect => v.sort_by(|&a, &b| {
             nan_last(-rows[a].pct.abs(), -rows[b].pct.abs()).then_with(|| name(a, b))
@@ -257,15 +251,6 @@ pub fn visible(rows: &[PairRow], f: &Filter) -> Vec<usize> {
         Sort::Name => v.sort_by(|&a, &b| name(a, b)),
     }
     v
-}
-
-/// The next verdict filter after `v`: every verdict in turn, then none.
-pub fn next_verdict(v: Option<Verdict>, by: isize) -> Option<Verdict> {
-    let all: Vec<Option<Verdict>> = std::iter::once(None)
-        .chain(Verdict::ALL.iter().copied().map(Some))
-        .collect();
-    let at = all.iter().position(|&x| x == v).unwrap_or(0) as isize;
-    all[(at + by).rem_euclid(all.len() as isize) as usize]
 }
 
 /// A row's headline as a percent change with its interval; `—` without.
@@ -277,18 +262,18 @@ pub fn change(row: &PairRow) -> String {
     }
 }
 
-/// A q-value in a few characters; one too small for the table's f32 reads
-/// as below the smallest it holds.
-pub fn q_text(q: f64) -> String {
-    if !q.is_finite() {
+/// A p or a local fdr in a few characters; one too small for the table's
+/// f32 reads as below the smallest it holds.
+pub fn probability_text(probability: f64) -> String {
+    if !probability.is_finite() {
         "—".into()
-    } else if q == 0.0 {
+    } else if probability == 0.0 {
         // Stored as f32, below whose smallest it reads as 0.
         "<1e-45".into()
-    } else if q < 1e-3 {
-        format!("{q:.0e}")
+    } else if probability < 1e-3 {
+        format!("{probability:.0e}")
     } else {
-        format!("{q:.3}")
+        format!("{probability:.3}")
     }
 }
 
@@ -794,7 +779,7 @@ impl LraView {
         let i = self.selected?;
         let row = &table.rows[i];
         let mut title = format!("{}:{}  threshold-response", row.ligand, row.receptor);
-        if table.subset_corrected() {
+        if table.subset_fitted() {
             title.push_str("  (subset)");
         }
         Some(Curve {

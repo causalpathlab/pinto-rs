@@ -13,7 +13,7 @@ use crate::lr_activity::ligand_effect::estimate::*;
 use crate::lr_activity::ligand_effect::fits::{fit_main, Fit, Rows, ThresholdFits};
 use crate::lr_activity::ligand_effect::inference::{Estimate, Z_975};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
-use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
+use crate::lr_activity::ligand_effect::report::report;
 use crate::lr_activity::ligand_effect::response::Response;
 use crate::lr_activity::ligand_effect::rows::EffectRow;
 use crate::lr_activity::ligand_effect::rows::Moments;
@@ -497,11 +497,11 @@ fn hopeless_pairs_skip_the_fits_with_the_guards_counts() {
     let want = fitted.levels[levels.len() / 2].scopes[0].competent;
     assert!(want.theta.is_nan());
     assert_eq!((head.n, head.n_treated), (want.n, want.n_treated));
-    report(&mut rows, &ReportOpts::default());
-    assert_eq!(
-        rows[0].verdict,
-        crate::lr_activity::ligand_effect::verdict::Verdict::InsufficientData
+    report(
+        &mut rows,
+        crate::lr_activity::ligand_effect::INTERNALS.min_arm,
     );
+    assert!(rows[0].effect_dr_p.is_nan());
     assert!(
         rows[0].warnings.starts_with("not estimable: thin arm"),
         "{}",
@@ -519,7 +519,10 @@ fn skipped_and_fitted(w: &World, o: &EffectOpts) -> (String, String) {
     let run = |fit_thin: bool| {
         let o = EffectOpts { fit_thin, ..*o };
         let mut rows = estimate_pair(&w.tissue, &data(w, &targets), &o).unwrap();
-        report(&mut rows, &ReportOpts::default());
+        report(
+            &mut rows,
+            crate::lr_activity::ligand_effect::INTERNALS.min_arm,
+        );
         format!("{rows:#?}")
     };
     (run(false), run(true))
@@ -553,8 +556,7 @@ fn skipped_fits_change_no_output() {
 }
 
 /// A thin competent arm skips the fits: the receptor-negative control checks
-/// an estimate the pair does not have, and does not enter its family's
-/// q-values.
+/// an estimate the pair does not have.
 #[test]
 fn a_thin_headline_drops_its_controls() {
     let mut w = world(8, 0.3, false);

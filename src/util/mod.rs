@@ -12,6 +12,7 @@ pub mod feature_axis;
 pub mod feature_modules;
 pub mod graph_coarsen;
 pub mod input;
+pub mod local_fdr;
 pub mod lupin_rounds;
 pub mod memory;
 pub mod metadata;
