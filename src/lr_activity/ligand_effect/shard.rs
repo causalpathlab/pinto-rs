@@ -17,6 +17,7 @@
 //! local fdr over every pair, recording them in the run's manifest.
 
 use super::baselines::TypeSource;
+use super::null_draws::NullRow;
 use super::output::CelltypeRow;
 use super::reference::hex;
 use super::rows::EffectRow;
@@ -218,6 +219,9 @@ pub struct ShardPair {
     pub index: usize,
     pub rows: Vec<EffectRow>,
     pub celltype: Vec<CelltypeRow>,
+    /// With `--null-permutations`, the pair's null rows.
+    #[serde(default)]
+    pub null: Vec<NullRow>,
 }
 
 /// One `pinto lra simulate` shard's file: its runs of the `n_runs` of the
@@ -429,6 +433,8 @@ pub struct Merged {
     pub rows: Vec<EffectRow>,
     /// With `--marginal-baselines`, every pair's cell-type rows.
     pub celltype: Option<Vec<CelltypeRow>>,
+    /// With `--null-permutations`, every pair's null rows.
+    pub null: Option<Vec<NullRow>>,
 }
 
 /// [`read_set`]'s files as one `pinto lra` run.
@@ -455,6 +461,10 @@ pub fn merge_lra(files: Vec<Contents>) -> anyhow::Result<Merged> {
         record.n_all
     );
     let rows = pairs.iter_mut().flat_map(|p| p.rows.drain(..)).collect();
+    let null = record
+        .options
+        .null_permutations
+        .map(|_| pairs.iter_mut().flat_map(|p| p.null.drain(..)).collect());
     let celltype = source.map(|s| {
         pairs
             .into_iter()
@@ -471,6 +481,7 @@ pub fn merge_lra(files: Vec<Contents>) -> anyhow::Result<Merged> {
         count,
         rows,
         celltype,
+        null,
     })
 }
 

@@ -484,6 +484,10 @@ const MIRRORS: &[Mirror] = &[
     ),
 ];
 
+/// Fields a tool has with no flag of its command, beside `background`
+/// (how every call runs): what one tool writes instead of running.
+const FIELDS_WITHOUT_FLAG: &[(&str, &str)] = &[("run_lra", "cluster_shards")];
+
 /// MCP mirrors the command line: a tool passing a command's flags has a
 /// field for each flag its `--help` shows, and none for a hidden one.
 #[test]
@@ -496,7 +500,7 @@ fn each_tool_s_fields_are_its_command_s_visible_flags() {
             .as_object()
             .unwrap()
             .keys()
-            .filter(|k| *k != "background")
+            .filter(|k| *k != "background" && !FIELDS_WITHOUT_FLAG.contains(&(tool, k.as_str())))
             .map(|k| {
                 renamed
                     .iter()

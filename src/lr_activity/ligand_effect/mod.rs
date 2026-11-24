@@ -96,6 +96,7 @@ pub mod inference;
 mod jackknife;
 pub mod link_community_scope;
 mod memory;
+mod null_draws;
 pub mod only;
 mod options;
 pub mod output;
@@ -210,6 +211,10 @@ pub struct Settings<'a> {
     /// baseline (`--marginal-permutations`); `None` without the flag, and
     /// always for `lra-simulate`, which scores its own.
     pub marginal: Option<usize>,
+    /// `--null-permutations`: permutation draws of each ligand, estimated
+    /// again into the null table ([`null_draws`]); 0 for none, and always
+    /// for `lra-simulate`.
+    pub null_permutations: u32,
     /// `--shard`: estimate only this shard's ligands and write their rows
     /// for `pinto lra merge` ([`shard`]); `None` for the whole run.
     pub shard: Option<shard::Shard>,
@@ -241,6 +246,7 @@ impl Settings<'_> {
             abf_prior_scale: self.abf_prior_scale,
             marginal_baselines: None,
             marginal_permutations: self.marginal,
+            null_permutations: (self.null_permutations > 0).then_some(self.null_permutations),
             link_community: self.link_community,
         }
     }

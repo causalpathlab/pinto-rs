@@ -2,6 +2,7 @@
 
 use super::columns::{f32s, Columns};
 use crate::lr_activity::ligand_effect::baselines::{Baselines, CellTypeTest, TypeLabels, TypePair};
+use crate::lr_activity::ligand_effect::null_draws::NullRow;
 use crate::lr_activity::ligand_effect::rows::{CurvePoint, EffectRow, Moments};
 use crate::lr_activity::ligand_effect::simulate::{RegionRead, SimRow, COMPARED};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -133,6 +134,23 @@ pub fn write_effects(
             .f("contact_p", b(|x| x.contact_p));
     }
     c.s("q_scope", |_| q_scope);
+    c.write(path)
+}
+
+/// `{table}.null.parquet` ([`super::null_beside`]): one row per pair,
+/// section, null draw and estimator, with the estimate under that draw.
+pub fn write_null(path: &str, rows: &[NullRow]) -> anyhow::Result<()> {
+    let mut c = Columns::new(rows);
+    c.s("section", |r| &r.section)
+        .s("ligand", |r| &r.ligand)
+        .s("receptor", |r| &r.receptor)
+        .s("null", |r| &r.null)
+        .i("draw", |r| r.draw as usize)
+        .s("estimator", |r| &r.estimator)
+        .f("estimate", |r| r.estimate.theta)
+        .f("se", |r| r.estimate.se)
+        .f("df", |r| r.estimate.df)
+        .d("p", |r| r.estimate.p());
     c.write(path)
 }
 

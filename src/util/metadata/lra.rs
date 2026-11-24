@@ -20,6 +20,10 @@ pub struct LraFiles {
     /// `--marginal-baselines`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub celltype: Option<String>,
+    /// The null draws' estimates, `{out}.lra.null.parquet`, when the table
+    /// was made with `--null-permutations`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub null: Option<String>,
     /// The power and calibration check, `{out}.lra-simulate.parquet`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub simulate: Option<String>,
@@ -153,6 +157,9 @@ pub struct LraOptions {
     /// `--marginal-permutations`, when the baselines were computed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marginal_permutations: Option<usize>,
+    /// `--null-permutations`, when the null table was made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub null_permutations: Option<u32>,
     /// `--link-community`: the stage-1 link community whose contacts carry
     /// the exposure, and whose receivers alone are fitted; `None` for the
     /// marginal run.
@@ -208,6 +215,7 @@ impl Default for LraOptions {
             abf_prior_scale: crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
             marginal_baselines: None,
             marginal_permutations: None,
+            null_permutations: None,
             link_community: None,
         }
     }
@@ -229,6 +237,9 @@ pub struct LraSubset {
     /// `--marginal-baselines`: the subset's per-type-pair table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub celltype: Option<String>,
+    /// `--null-permutations`: the subset's null table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub null: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<LraOptions>,
 }

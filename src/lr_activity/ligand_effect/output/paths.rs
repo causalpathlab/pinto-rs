@@ -12,6 +12,12 @@ pub fn celltype_beside(table: &str) -> String {
     beside(table, "celltype")
 }
 
+/// The null draws' estimates (`--null-permutations`) beside the
+/// contact-effect table `table`: `{table without .parquet}.null.parquet`.
+pub fn null_beside(table: &str) -> String {
+    beside(table, "null")
+}
+
 /// `{table without .parquet}.{what}.parquet`.
 fn beside(table: &str, what: &str) -> String {
     format!(

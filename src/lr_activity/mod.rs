@@ -111,6 +111,9 @@ impl crate::util::metadata::LraOptions {
                 }
             }
         }
+        if let Some(k) = self.null_permutations {
+            argv.push(flag_value("--null-permutations", k));
+        }
         // each value in its flag's word, so a negative one reaches lra's check
         let mut flag = |name: &str, value: String| argv.push(flag_value(name, value));
         if method != args::LraMethod::default() {

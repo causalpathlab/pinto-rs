@@ -209,6 +209,7 @@ fn community_shards_merged_write_the_community_runs_tables() {
         shard,
         marginal_baselines: false,
         link_community: Some((1, &communities)),
+        null_permutations: 0,
     };
     let whole = at("whole");
     run_on_the_test_tissue(dir.path(), &whole, &manifest, &choices(None));

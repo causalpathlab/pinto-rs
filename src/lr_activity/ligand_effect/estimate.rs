@@ -159,14 +159,18 @@ pub struct PairData<'a> {
 /// The pair is one of its ligand's, and its propensities are bordered from
 /// the ligand's `share`: the base fits are made once for all of the ligand's
 /// pairs ([`LigandShare`]), and each pair reaches the optimum it would on its
-/// own.
+/// own. `sensitivity` names the sensitivity fits run beside the headline:
+/// all of them for a real pair, none for a null draw, which reports only the
+/// headline and the outcome regression.
 pub fn estimate_pair_shared(
     tissue: &Tissue,
     pair: &PairData<'_>,
     opts: &EffectOpts,
     share: &LigandShare,
+    sensitivity: Sensitivity,
 ) -> anyhow::Result<Vec<EffectRow>> {
-    estimate_on(Rows::cells(tissue).shared(share), tissue, pair, opts)
+    let rows = Rows::cells(tissue).shared(share);
+    estimate_on(rows, tissue, pair, opts, sensitivity)
 }
 
 /// [`estimate_pair_shared`] with every propensity fitted on all of its
@@ -178,7 +182,7 @@ pub fn estimate_pair(
     pair: &PairData<'_>,
     opts: &EffectOpts,
 ) -> anyhow::Result<Vec<EffectRow>> {
-    estimate_on(Rows::cells(tissue), tissue, pair, opts)
+    estimate_on(Rows::cells(tissue), tissue, pair, opts, Sensitivity::ALL)
 }
 
 fn estimate_on(
@@ -186,6 +190,7 @@ fn estimate_on(
     tissue: &Tissue,
     pair: &PairData<'_>,
     opts: &EffectOpts,
+    sensitivity: Sensitivity,
 ) -> anyhow::Result<Vec<EffectRow>> {
     let ex = timing::time(timing::FRAME, || {
         Exposure::build(tissue, pair.ligand_counts, opts)
@@ -219,13 +224,7 @@ fn estimate_on(
         jackknife: Some(&tiles),
         ..rows
     };
-    let mut eff = over_thresholds(
-        jack_rows,
-        &fit,
-        &taus,
-        Sensitivity::ALL,
-        FoldStarts::default(),
-    )?;
+    let mut eff = over_thresholds(jack_rows, &fit, &taus, sensitivity, FoldStarts::default())?;
     for ((e, j), (_, scope)) in eff
         .scopes
         .iter_mut()

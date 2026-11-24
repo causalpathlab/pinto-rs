@@ -122,6 +122,13 @@ lra_tool_args!(LraToolArgs {
     pub marginal_baselines: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marginal_permutations: Option<usize>,
+    /// `--null-permutations`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub null_permutations: Option<u32>,
+    /// Write the call as this many shards in a legume benchmark spec
+    /// ([`super::lra_cluster`]) instead of running it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_shards: Option<usize>,
 });
 
 impl LraToolArgs {
@@ -140,8 +147,9 @@ impl LraToolArgs {
 
     /// What `pinto lra` writes for these arguments: with `shard`, its shard
     /// file alone; else [`lra_outputs`], and with `marginal_baselines` the
-    /// per-type-pair table beside the contact-effect table.
-    fn outputs(&self, method: LraMethod, out: &str) -> Vec<PathBuf> {
+    /// per-type-pair table, with `null_permutations` the null table, beside
+    /// the contact-effect table.
+    pub(super) fn outputs(&self, method: LraMethod, out: &str) -> Vec<PathBuf> {
         use crate::lr_activity::ligand_effect::link_community_scope;
         if let Ok(Some(s)) = self.shard() {
             return vec![link_community_scope::shard_path(out, s, self.link_community).into()];
@@ -152,9 +160,12 @@ impl LraToolArgs {
             &self.only(),
             self.link_community,
         );
+        let table = made[0].to_string_lossy().into_owned();
         if self.marginal_baselines && method == LraMethod::ContactEffect {
-            let table = made[0].to_string_lossy().into_owned();
             made.push(output::celltype_beside(&table).into());
+        }
+        if self.null_permutations.unwrap_or(0) > 0 && method == LraMethod::ContactEffect {
+            made.push(output::null_beside(&table).into());
         }
         made
     }
@@ -195,6 +206,7 @@ impl LraToolArgs {
                 self.marginal_permutations
                     .unwrap_or(crate::lr_activity::ligand_effect::PERMUTATIONS)
             }),
+            null_permutations: self.null_permutations.filter(|&k| k > 0),
             ..d
         }
     }
@@ -687,7 +699,7 @@ fn made_as_asked(
 
 /// `argv` checked as pinto parses it, and for the flags only the contact
 /// effect takes, as `pinto lra` checks them before reading any data.
-fn checked_lra(cli: &clap::Command, argv: &[String]) -> anyhow::Result<()> {
+pub(super) fn checked_lra(cli: &clap::Command, argv: &[String]) -> anyhow::Result<()> {
     let args: crate::lr_activity::SrtLrActivityArgs = super::mcp::parsed(cli, argv)?;
     crate::lr_activity::fit::check_method_flags(&args)
         .map_err(|e| anyhow::anyhow!("pinto {}: {e}", super::mcp::named(argv)))
@@ -733,6 +745,12 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
     );
     let shard = a.shard()?;
     let out = named_out(a.out.as_deref());
+    if let Some(shards) = a.cluster_shards {
+        let out = out.filter(|o| !o.is_empty()).ok_or_else(|| {
+            anyhow::anyhow!("cluster_shards needs out: the spec is written beside it")
+        })?;
+        return super::lra_cluster::cluster_reply(cli, a, method, run, &out, shards);
+    }
     anyhow::ensure!(
         shard.is_none() || out.as_deref().is_some_and(|o| !o.is_empty()),
         "shard needs out: every shard of a run writes under the one prefix the merge reads"
@@ -813,8 +831,10 @@ fn merge_args(shard: Shard, out: &str, link_community: Option<i64>) -> Value {
 fn shard_note(shard: Shard, out: &str, link_community: Option<i64>) -> String {
     format!(
         "A shard writes no table and records nothing in the manifest. Run every shard \
-         I/{n} (I from 0 to {last}) with the same arguments, each as its own job (a Slurm \
-         array task, I = $SLURM_ARRAY_TASK_ID); once all {n} are done, run_lra_merge {} \
+         I/{n} (I from 0 to {last}) with the same arguments, each as its own job; on a \
+         cluster, run_lra with cluster_shards {n} (and no shard) instead writes a legume \
+         benchmark spec running all {n} and the merge, for legume-mcp benchmark_plan and \
+         benchmark_start. Once all {n} are done, run_lra_merge {} \
          writes the tables of the whole run, its p-values and co-expression's local fdr \
          over every pair.",
         merge_args(shard, out, link_community),

@@ -175,11 +175,20 @@ pub fn q_scope(
 /// A shard's file: `{out}.lra[.link-community-K].shard-I-of-N.cbor`, so the
 /// shards of different communities, or of the marginal run, never collide.
 pub fn shard_path(out: &str, shard: super::shard::Shard, link_community: Option<i64>) -> String {
+    shard_path_named(out, shard.index, shard.count, link_community)
+}
+
+/// [`shard_path`] with the shard and count as given: numbers, or the
+/// `{shard}` and `{shards}` placeholders of a cluster spec.
+pub fn shard_path_named(
+    out: &str,
+    index: impl std::fmt::Display,
+    count: impl std::fmt::Display,
+    link_community: Option<i64>,
+) -> String {
     format!(
-        "{}.shard-{}-of-{}.cbor",
-        table_base(out, link_community),
-        shard.index,
-        shard.count
+        "{}.shard-{index}-of-{count}.cbor",
+        table_base(out, link_community)
     )
 }
 
