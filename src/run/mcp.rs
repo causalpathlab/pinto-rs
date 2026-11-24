@@ -966,7 +966,9 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              a few pairs to {out}.lra.only-<tag>.parquet (and .curve.parquet, and \
              .celltype.parquet with marginal_baselines; slot lra.subsets); with shard I/N, only \
              shard I of the pairs to {out}.lra.shard-I-of-N.cbor (no table, nothing in the \
-             manifest), each shard its own job, then run_lra_merge writes the tables. The \
+             manifest), each shard its own job, then run_lra_merge writes the tables; with cluster_shards N, \
+             nothing runs: it writes a legume benchmark spec of N shards and their merge for \
+             legume-mcp to run on a cluster. The \
              co-expression methods \
              need an lc run and lr_pairs. Runs as a background job unless asked (tens of minutes \
              on a large whole tissue; job_status shows how many pairs are done); the reply when done holds how many pairs have an \
@@ -990,7 +992,8 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "min_gene_count": lra("min_gene_count", json!({"type": "number"})),
                     "marginal_baselines": lra("marginal_baselines", json!({"type": "boolean"})),
                     "marginal_permutations": lra("marginal_permutations", json!({"type": "integer", "minimum": 1})),
-                    "null_permutations": lra("null_permutations", json!({"type": "integer", "minimum": 0})),
+                    "null_permutations": lra("null_permutations", json!({"type": "integer", "minimum": 1})),
+                    "cluster_shards": {"type": "integer", "minimum": 1, "description": "Run nothing here: write {out}.lra.cluster.json, a legume benchmark spec running this call as that many shards (--shard) on a cluster and merging them, and reply with the legume-mcp calls that run it (benchmark_plan, benchmark_start, benchmark_status)"},
                     "background": background(),
                 },
                 "additionalProperties": false,

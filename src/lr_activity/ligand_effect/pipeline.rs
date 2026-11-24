@@ -1,6 +1,7 @@
 //! The commands from input to tables: `pinto lra` and `pinto lra simulate`.
 
 use super::baselines::{marginals, Baselines, CellTypeTest, TypeLabels};
+use super::effects::Sensitivity;
 use super::estimate::{estimate_pair_shared, PairData};
 use super::fits::LigandShare;
 use super::genes::GeneStore;
@@ -338,13 +339,15 @@ fn ligand_groups(pairs: &[Pair]) -> Vec<Vec<usize>> {
 }
 
 /// One pair's rows on the ligand counts `lig` (its own, or a null draw's),
-/// its propensities bordered from its ligand's `share`; a pair that fails
+/// its propensities bordered from its ligand's `share`, with the sensitivity fits
+/// `sensitivity` names; a pair that fails
 /// is warned about and has none.
 fn estimate_one(
     prep: &Prepared,
     p: &Pair,
     lig: &[f64],
     share: &LigandShare,
+    sensitivity: Sensitivity,
 ) -> Vec<rows::EffectRow> {
     let (store, local) = (&prep.store, &prep.local);
     let rec = prep.receptor_counts(p);
@@ -369,7 +372,7 @@ fn estimate_one(
         reweighted: (specific.len() >= INTERNALS.min_targets).then_some(specific.as_slice()),
         n_removed: p.n_removed,
     };
-    estimate_pair_shared(&prep.tissue, &data, &prep.eopts, share).unwrap_or_else(|e| {
+    estimate_pair_shared(&prep.tissue, &data, &prep.eopts, share, sensitivity).unwrap_or_else(|e| {
         warn!(target: LOG_TARGET, "{}-{}: {e}", p.ligand, p.receptor);
         Vec::new()
     })
@@ -395,7 +398,7 @@ fn estimate_pairs(prep: &Prepared) -> Vec<Vec<rows::EffectRow>> {
             .iter()
             .map(|&k| {
                 let p = &prep.pairs[k];
-                let out = estimate_one(prep, p, &prep.ligand_counts(p), &share);
+                let out = estimate_one(prep, p, &prep.ligand_counts(p), &share, Sensitivity::ALL);
                 pb.inc();
                 (k, out)
             })

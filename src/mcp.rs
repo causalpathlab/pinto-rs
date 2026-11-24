@@ -68,9 +68,13 @@ receivers touching ligand-carrying neighbours change their response \
 program; `run_lra_simulate` plants effects of known size on the same \
 tissue and reports power and type I error. Run lra simulate to check power \
 and calibration before trusting lra on a new tissue. A large tissue can run \
-in shards: `run_lra` with `shard` I/N for each I, each shard a separate job \
-(e.g. a Slurm array task), then `run_lra_merge` on the N shard files writes \
-the tables of the whole run. lra judges nothing: each pair's effect, its \
+in shards: `run_lra` with `shard` I/N for each I, each shard a separate job, \
+then `run_lra_merge` on the N shard files writes the tables of the whole run. \
+On a cluster, `run_lra` with `cluster_shards` N runs nothing and writes a \
+legume benchmark spec of the N shards and their merge (null draws too, with \
+`null_permutations`); hand it to legume-mcp: `benchmark_plan` and \
+`benchmark_start` with that spec and `on` the cluster, then `benchmark_status` \
+until it ends. lra judges nothing: each pair's effect, its \
 effect in receptor-negative receivers and their contrast come with SE, df and \
 p, and co-expression with its local fdr; the reader decides. `view_lra` lists \
 a run's pairs with their statistics and, given a pair, makes `view_map` draw \

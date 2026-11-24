@@ -7,6 +7,7 @@
 
 pub(crate) mod form;
 pub(crate) mod lra;
+mod lra_cluster;
 pub(crate) mod mcp;
 pub(crate) mod script;
 pub(crate) mod sim;

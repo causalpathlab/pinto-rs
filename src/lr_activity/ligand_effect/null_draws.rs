@@ -7,9 +7,9 @@
 //! identity bin within a spatial tile (tiles lie within a section): the
 //! ligand keeps its cell-type make-up and its coarse spatial pattern, and
 //! only the fine alignment of contacts with responders breaks. Cells are
-//! still not exchangeable across contacts, so this null is narrower than the
-//! truth's; it is one comparison, beside N(0, 1) and others to come (decoy
-//! ligands), none privileged.
+//! still not exchangeable across contacts, so this null is not the truth's
+//! either, and may stray from N(0, 1) either way; it is one comparison,
+//! beside N(0, 1) and others to come (decoy ligands), none privileged.
 //!
 //! A draw is seeded by the run's seed, the ligand and the draw's index, so
 //! the pairs of one ligand see one shuffle (and share its fits, as in the
@@ -18,7 +18,7 @@
 use super::inference::Estimate;
 use super::rows::EffectRow;
 use super::tissue::Tissue;
-use legume_numeric::matrix::rand_util::mix_seed;
+use legume_numeric::matrix::rand_util::{mix_seed, name_seed};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -48,13 +48,10 @@ pub struct NullRow {
 }
 
 /// The seed of draw `draw` of `ligand` (its genes' names joined, as the pair
-/// names it) under the run's `seed`. FNV-1a, which no Rust release changes.
+/// names it) under the run's `seed`: FNV-1a of the name ([`name_seed`]),
+/// which no Rust release changes.
 pub fn draw_seed(seed: u64, ligand: &str, draw: u32) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in ligand.bytes() {
-        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
-    }
-    mix_seed(mix_seed(seed, h), u64::from(draw))
+    mix_seed(name_seed(seed, ligand), u64::from(draw))
 }
 
 /// `counts` (one per tissue row) shuffled within each identity bin × tile.

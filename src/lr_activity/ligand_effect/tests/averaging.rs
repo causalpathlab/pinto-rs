@@ -763,7 +763,8 @@ fn a_ligands_shared_propensity_is_each_pairs_own() {
         let mut out: Vec<Vec<EffectRow>> = vec![Vec::new(), Vec::new()];
         for (i, &k) in order.iter().enumerate() {
             let before = share.fits();
-            out[k] = estimate_pair_shared(&w.tissue, &pairs[k], &o, &share).unwrap();
+            out[k] =
+                estimate_pair_shared(&w.tissue, &pairs[k], &o, &share, Sensitivity::ALL).unwrap();
             if i == 0 {
                 assert!(share.fits() > 0, "the first pair fits the ligand's bases");
             } else {
