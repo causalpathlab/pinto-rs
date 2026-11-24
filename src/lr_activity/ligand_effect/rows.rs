@@ -7,6 +7,23 @@ use super::jackknife::Jackknife;
 use super::tissue::ALL_SECTIONS;
 use super::verdict::Verdict;
 
+/// A statistic's local fdr ([`crate::util::local_fdr`]) under the null
+/// fitted to the bulk of its family (Efron's empirical null) and under the
+/// theoretical `N(0, 1)`; NaN in a family too small to fit
+/// ([`super::report::MIN_STATISTICS_FOR_LOCAL_FDR`]).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct LocalFdr {
+    pub empirical_null: f64,
+    pub theoretical_null: f64,
+}
+
+impl LocalFdr {
+    pub const NAN: Self = Self {
+        empirical_null: f64::NAN,
+        theoretical_null: f64::NAN,
+    };
+}
+
 /// One output row: a pair in one section, or pooled.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct EffectRow {
@@ -47,26 +64,23 @@ pub struct EffectRow {
     pub jackknife: Jackknife,
     // From here on filled in by `report`, once every pair is in.
     /// Two-sided p of the headline (the competent effect) against the t reference with
-    /// clusters − 1 degrees of freedom ([`super::inference::Estimate::p`]), and its BH q
-    /// within the section.
+    /// clusters − 1 degrees of freedom ([`super::inference::Estimate::p`]), and its local
+    /// fdr among the section's pairs ([`super::report::report`]).
     pub effect_dr_p: f64,
-    pub effect_dr_q: f64,
+    pub effect_dr_lfdr: LocalFdr,
     /// One-sided (positive) normal p of the co-expression log odds ratio,
-    /// and its BH q within the section.
+    /// and its local fdr, signal above the null only.
     pub coexpr_p: f64,
-    pub coexpr_q: f64,
-    /// BH q of the incompetent effect, a control, two-sided, among the
-    /// significant effects.
-    pub effect_dr_incompetent_q: f64,
-    /// BH q of the contrast between the effects in competent and in
-    /// receptor-negative receivers, among the significant effects.
-    pub effect_dr_contrast_q: f64,
+    pub coexpr_lfdr: LocalFdr,
+    /// Local fdr of the incompetent effect, a control, two-sided.
+    pub effect_dr_incompetent_lfdr: LocalFdr,
+    /// Local fdr of the contrast between the effects in competent and in
+    /// receptor-negative receivers.
+    pub effect_dr_contrast_lfdr: LocalFdr,
     /// Pairs in the section sharing this pair's ligand.
     pub n_pairs_same_ligand: usize,
-    /// BH q over ligands of the Simes p of each ligand's pairs.
-    pub ligand_q: f64,
     pub verdict: Verdict,
-    /// Why the verdict is what it is beyond the q-values: failed controls,
+    /// Why the verdict is what it is beyond the local fdrs: failed controls,
     /// confounding, why a pair is not estimable. Semicolon separated.
     pub warnings: String,
 }
@@ -102,13 +116,12 @@ impl EffectRow {
             marginal: None,
             jackknife: Jackknife::NONE,
             effect_dr_p: f64::NAN,
-            effect_dr_q: f64::NAN,
+            effect_dr_lfdr: LocalFdr::NAN,
             coexpr_p: f64::NAN,
-            coexpr_q: f64::NAN,
-            effect_dr_incompetent_q: f64::NAN,
-            effect_dr_contrast_q: f64::NAN,
+            coexpr_lfdr: LocalFdr::NAN,
+            effect_dr_incompetent_lfdr: LocalFdr::NAN,
+            effect_dr_contrast_lfdr: LocalFdr::NAN,
             n_pairs_same_ligand: 0,
-            ligand_q: f64::NAN,
             verdict: Verdict::InsufficientData,
             warnings: String::new(),
         }

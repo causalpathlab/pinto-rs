@@ -1,39 +1,28 @@
-//! Inference across pairs: BH and Simes on known vectors, the verdict
-//! table with its overrides, and the cell-type identifiability diagnostic
-//! on the synthetic grid tissue.
+//! Inference across pairs: the t and normal references, the local fdr over
+//! a family of pairs, the verdict table with its overrides, and the
+//! cell-type identifiability diagnostic on the synthetic grid tissue.
 
 use super::rows_of;
 use super::simulate::fixture;
 use crate::lr_activity::ligand_effect::averaging::AbfSummary;
 use crate::lr_activity::ligand_effect::dose::eta_squared;
 use crate::lr_activity::ligand_effect::effects::ScopeEffects;
-use crate::lr_activity::ligand_effect::inference::{t_crit_975, t_two_sided_p, Estimate};
-use crate::lr_activity::ligand_effect::report::{bh, report, simes, ReportOpts};
-use crate::lr_activity::ligand_effect::rows::EffectRow;
+use crate::lr_activity::ligand_effect::inference::{
+    normal_score_of_two_sided_p, t_crit_975, t_two_sided_p, upper_normal_p, Estimate,
+};
+use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
+use crate::lr_activity::ligand_effect::rows::{EffectRow, LocalFdr};
 use crate::lr_activity::ligand_effect::verdict::{verdict, Evidence, Verdict};
 
-fn close(a: &[f64], b: &[f64]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|(x, y)| (x.is_nan() && y.is_nan()) || (x - y).abs() < 1e-12)
-}
-
-// * p-values, BH and Simes
+// * p-values and normal scores
 
 #[test]
 fn normal_tails() {
     let inf = f64::INFINITY;
     assert!((t_two_sided_p(1.959_964, inf) - 0.05).abs() < 1e-6);
     assert!((t_two_sided_p(-1.959_964, inf) - 0.05).abs() < 1e-6);
-    assert!(
-        (crate::lr_activity::ligand_effect::inference::upper_normal_p(1.644_854) - 0.05).abs()
-            < 1e-6
-    );
-    assert!(
-        (crate::lr_activity::ligand_effect::inference::upper_normal_p(-1.644_854) - 0.95).abs()
-            < 1e-6
-    );
+    assert!((upper_normal_p(1.644_854) - 0.05).abs() < 1e-6);
+    assert!((upper_normal_p(-1.644_854) - 0.95).abs() < 1e-6);
     assert!(t_two_sided_p(f64::NAN, inf).is_nan());
 }
 
@@ -56,29 +45,26 @@ fn t_reference_matches_tables() {
     assert!(t_two_sided_p(2.0, 20.0) > t_two_sided_p(2.0, f64::INFINITY));
 }
 
+/// The normal score gives back its p, including where `1 − p` rounds to 1.
 #[test]
-fn bh_known_vectors() {
-    assert!(close(&bh(&[0.01, 0.02, 0.03, 0.04, 0.05]), &[0.05; 5]));
-    // Sorted 0.005, 0.01, 0.03, 0.04 → raw 0.02, 0.02, 0.04, 0.04.
-    assert!(close(
-        &bh(&[0.01, 0.04, 0.03, 0.005]),
-        &[0.02, 0.04, 0.04, 0.02]
-    ));
-    // Raw 0.2, 0.15, 0.27: the running minimum from the largest p down
-    // lowers the smallest p's q to 0.15.
-    assert!(close(&bh(&[0.2, 0.1, 0.09]), &[0.2, 0.15, 0.15]));
-    // NaN is left out of m.
-    assert!(close(&bh(&[0.5, f64::NAN, 0.01]), &[0.5, f64::NAN, 0.02]));
-    assert!(close(&bh(&[0.9, 0.95]), &[0.95, 0.95]));
-}
-
-#[test]
-fn simes_known_vectors() {
-    // 0.01·3/1 = 0.03, 0.04·3/2 = 0.06, 0.5.
-    assert!((simes(&[0.04, 0.01, 0.5]) - 0.03).abs() < 1e-12);
-    assert!((simes(&[0.2, f64::NAN]) - 0.2).abs() < 1e-12);
-    assert!(simes(&[f64::NAN]).is_nan());
-    assert!((simes(&[0.9, 0.95]) - 0.95).abs() < 1e-12);
+fn normal_score_inverts_the_two_sided_p() {
+    assert!((normal_score_of_two_sided_p(0.05) - 1.959_964).abs() < 1e-5);
+    assert_eq!(normal_score_of_two_sided_p(1.0), 0.0);
+    assert!(normal_score_of_two_sided_p(f64::NAN).is_nan());
+    for z in [0.3, 1.0, 2.5, 8.0, 20.0, 37.0] {
+        let p = 2.0 * upper_normal_p(z);
+        let back = normal_score_of_two_sided_p(p);
+        assert!((back - z).abs() < 1e-8 * z.max(1.0), "{z}: {back}");
+    }
+    // A t on few degrees of freedom scores less than its statistic, and a p
+    // that underflowed is infinite.
+    let few = Estimate {
+        df: 4.0,
+        ..est(-0.15, 0.05)
+    };
+    let s = normal_score_of_two_sided_p(few.p());
+    assert!(s > 0.0 && s < 3.0, "{s}");
+    assert_eq!(normal_score_of_two_sided_p(0.0), f64::INFINITY);
 }
 
 // * Verdicts
@@ -181,21 +167,38 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64, z3: f64, eta2: f64) -> Effe
         marginal: None,
         jackknife: crate::lr_activity::ligand_effect::jackknife::Jackknife::NONE,
         effect_dr_p: f64::NAN,
-        effect_dr_q: f64::NAN,
+        effect_dr_lfdr: LocalFdr::NAN,
         coexpr_p: f64::NAN,
-        coexpr_q: f64::NAN,
-        effect_dr_incompetent_q: f64::NAN,
-        effect_dr_contrast_q: f64::NAN,
+        coexpr_lfdr: LocalFdr::NAN,
+        effect_dr_incompetent_lfdr: LocalFdr::NAN,
+        effect_dr_contrast_lfdr: LocalFdr::NAN,
         n_pairs_same_ligand: 0,
-        ligand_q: f64::NAN,
         verdict: Verdict::InsufficientData,
         warnings: String::new(),
     }
 }
 
+/// Null pairs in section `all`, enough for a local fdr: every statistic at
+/// the normal's quantiles, each in its own order so no two are tied.
+const NULL_PAIRS: usize = 150;
+
+fn quantile(k: usize) -> f64 {
+    let u = (k as f64 + 0.5) / NULL_PAIRS as f64;
+    normal_score_of_two_sided_p(2.0 * u.min(1.0 - u)) * (u - 0.5).signum()
+}
+
+/// `rows`, then [`NULL_PAIRS`] null pairs after them.
+fn among_nulls(mut rows: Vec<EffectRow>) -> Vec<EffectRow> {
+    rows.extend((0..NULL_PAIRS).map(|k| {
+        let (zc, z3) = (quantile(NULL_PAIRS - 1 - k), quantile(k * 7 % NULL_PAIRS));
+        row("all", &format!("N{k}"), quantile(k), zc, z3, 0.1)
+    }));
+    rows
+}
+
 #[test]
 fn report_labels_and_overrides() {
-    let mut rows = vec![
+    let mut rows = among_nulls(vec![
         row("all", "L1", 10.0, 10.0, 0.0, 0.1),
         row("all", "L1", 10.0, 10.0, 10.0, 0.1),
         row("all", "L2", 10.0, 10.0, 0.0, 0.9),
@@ -203,12 +206,13 @@ fn report_labels_and_overrides() {
         row("all", "L4", 0.1, 0.0, 0.0, 0.1),
         row("all", "L5", 10.0, -3.0, 0.0, 0.1),
         row("all", "L6", 0.0, 10.0, 0.0, 0.1),
-        // Alone in its section, so its q is its p.
-        row("s1", "L1", 1.0, 0.0, 0.0, 0.1),
-    ];
+        // Alone in its section: too few for a local fdr, so its p is tested
+        // alone, and passes.
+        row("s1", "L1", 10.0, 10.0, 0.0, 0.1),
+    ]);
     rows[3].effects.competent = Estimate::nan(400, 3);
     report(&mut rows, &ReportOpts::default());
-    let got: Vec<&str> = rows.iter().map(|r| r.verdict.code()).collect();
+    let got: Vec<&str> = rows[..8].iter().map(|r| r.verdict.code()).collect();
     assert_eq!(
         got,
         [
@@ -219,10 +223,10 @@ fn report_labels_and_overrides() {
             "no_evidence",
             "effect_without_coexpression",
             "colocation_only",
-            "no_evidence",
+            "supported",
         ]
     );
-    assert!(rows[0].warnings.is_empty());
+    assert!(rows[0].warnings.is_empty(), "{}", rows[0].warnings);
     assert!(rows[1].warnings.contains("receptor-negative"));
     assert!(rows[2].warnings.contains("neighbour cell type"));
     assert!(rows[2].warnings.contains("cell-type artefact"));
@@ -232,43 +236,52 @@ fn report_labels_and_overrides() {
         rows[3].warnings
     );
 
-    // Ligand families within a section; the s1 row is its own family.
+    // Ligands are counted within a section.
     assert_eq!(rows[0].n_pairs_same_ligand, 2);
-    assert_eq!(rows[1].n_pairs_same_ligand, 2);
     assert_eq!(rows[2].n_pairs_same_ligand, 1);
     assert_eq!(rows[7].n_pairs_same_ligand, 1);
-    assert!((rows[7].effect_dr_q - rows[7].effect_dr_p).abs() < 1e-12);
-    assert!((rows[7].effect_dr_p - t_two_sided_p(1.0, f64::INFINITY)).abs() < 1e-9);
-    assert!((rows[7].ligand_q - rows[7].effect_dr_p).abs() < 1e-12);
-    // The NaN headline is out of the family: 6 finite p in "all".
-    assert!(rows[3].effect_dr_p.is_nan() && rows[3].effect_dr_q.is_nan());
-    // z = 0 is the largest p (1) of the family, and keeps q = p.
-    assert!((rows[6].effect_dr_q - 1.0).abs() < 1e-12);
-    // One-sided: a negative co-expression score is not significant.
+    // A section too small has p-values and no local fdr.
+    assert!((rows[7].effect_dr_p - t_two_sided_p(10.0, f64::INFINITY)).abs() < 1e-12);
+    assert!(rows[7].effect_dr_lfdr.empirical_null.is_nan());
+    // The NaN headline is out of the family and has no lfdr.
+    assert!(rows[3].effect_dr_p.is_nan() && rows[3].effect_dr_lfdr.empirical_null.is_nan());
+    // Far out the null is gone, at its centre it is all there is.
+    let l = |i: usize| rows[i].effect_dr_lfdr;
+    assert!(l(0).empirical_null < 1e-6 && l(0).theoretical_null < 1e-6);
+    assert!(l(6).empirical_null > 0.9 && l(6).theoretical_null > 0.9);
+    // One-sided: a negative co-expression score is null.
     assert!(rows[5].coexpr_p > 0.99);
+    assert_eq!(rows[5].coexpr_lfdr.empirical_null, 1.0);
 }
 
 #[test]
-fn fdr_level_moves_verdicts() {
-    // z = 2.2 gives p ≈ 0.028: significant alone at 0.05, not at 0.01.
-    let mut rows = vec![row("all", "L1", 2.2, 0.0, 0.0, 0.1)];
-    report(&mut rows, &ReportOpts::default());
-    assert_eq!(rows[0].verdict, Verdict::EffectWithoutCoexpression);
-    report(
-        &mut rows,
-        &ReportOpts {
-            fdr: 0.01,
+fn local_fdr_level_moves_verdicts() {
+    let judged = |level: f64| {
+        let mut rows = among_nulls(vec![row("all", "L1", 3.0, 0.0, -6.0, 0.1)]);
+        let opts = ReportOpts {
+            local_fdr_level: level,
             ..ReportOpts::default()
-        },
-    );
-    assert_eq!(rows[0].verdict, Verdict::NoEvidence);
-    // Many nulls beside it: BH no longer lets it through at 0.05.
-    let mut rows: Vec<EffectRow> = (0..20)
-        .map(|k| row("all", &format!("N{k}"), 0.05 * k as f64, 0.0, 0.0, 0.1))
-        .collect();
-    rows.push(row("all", "L1", 2.2, 0.0, 0.0, 0.1));
+        };
+        report(&mut rows, &opts);
+        (rows[0].effect_dr_lfdr.empirical_null, rows[0].verdict)
+    };
+    let (l, _) = judged(0.2);
+    assert!(l > 0.0 && l < 1.0, "{l}");
+    assert_eq!(judged(l * 1.01).1, Verdict::EffectWithoutCoexpression);
+    assert_eq!(judged(l * 0.99).1, Verdict::NoEvidence);
+}
+
+/// Every statistic is moved alike (a residual confounder widening every z):
+/// the null fitted to the bulk widens with it, the theoretical one does not.
+#[test]
+fn an_inflated_family_is_read_against_its_own_null() {
+    let mut rows = among_nulls(vec![row("all", "L1", 4.5, 0.0, 0.0, 0.1)]);
+    for r in rows.iter_mut() {
+        r.effects.competent.theta *= 1.6;
+    }
     report(&mut rows, &ReportOpts::default());
-    assert_eq!(rows[20].verdict, Verdict::NoEvidence);
+    let l = rows[0].effect_dr_lfdr;
+    assert!(l.empirical_null > l.theoretical_null, "{l:?}");
 }
 
 // * Identifiability
@@ -304,16 +317,15 @@ fn exposure_eta2_tracks_neighbour_identity() {
     assert!(eta_squared(&nb, &vec![1.0; n], &all).is_nan());
 }
 
-/// The controls are corrected among the pairs with a significant effect:
-/// the others show none and warn of none, and what they show cannot move a
-/// significant pair's control.
+/// The controls are fitted over every pair, like the effect; a control
+/// responding is a warning beside an effect only.
 #[test]
-fn controls_are_corrected_among_significant_effects() {
-    let e3_q = |rows: &[EffectRow], i: usize| rows[i].effect_dr_incompetent_q;
-    // No significant effect: no control is read, however strong.
-    let mut rows = vec![row("all", "L1", 0.0, 0.0, 10.0, 0.1)];
+fn controls_are_fitted_over_every_pair() {
+    let e3 = |rows: &[EffectRow], i: usize| rows[i].effect_dr_incompetent_lfdr.empirical_null;
+    // No effect: the control has its lfdr, and warns of nothing.
+    let mut rows = among_nulls(vec![row("all", "L1", 0.0, 0.0, 10.0, 0.1)]);
     report(&mut rows, &ReportOpts::default());
-    assert!(e3_q(&rows, 0).is_nan() && rows[0].effect_dr_contrast_q.is_nan());
+    assert!(e3(&rows, 0) < 1e-6, "{}", e3(&rows, 0));
     assert_eq!(rows[0].verdict.code(), "no_evidence");
     assert!(
         !rows[0].warnings.contains("respond"),
@@ -321,36 +333,13 @@ fn controls_are_corrected_among_significant_effects() {
         rows[0].warnings
     );
 
-    // Alone among the significant, its control's q is its p: unrelated pairs,
-    // with controls strong or weak, change neither it nor its verdict.
-    let alone = |others: &[f64]| {
-        let mut rows = vec![row("all", "L1", 10.0, 10.0, 8.5, 0.1)];
-        for (k, &z3) in others.iter().enumerate() {
-            rows.push(row("all", &format!("L{}", k + 2), 0.0, 0.0, z3, 0.1));
-        }
-        report(&mut rows, &ReportOpts::default());
-        (e3_q(&rows, 0), rows[0].verdict.code())
-    };
-    let (q, verdict) = alone(&[]);
-    assert_eq!(verdict, "control_failed");
-    assert_eq!((q, verdict), alone(&[10.0; 20]));
-    assert_eq!((q, verdict), alone(&[0.0; 20]));
-
     // A significant effect whose control has no estimate has not held.
-    let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.1)];
+    let mut rows = among_nulls(vec![row("all", "L1", 10.0, 10.0, 0.0, 0.1)]);
     rows[0].effects.incompetent = Estimate::nan(10, 1);
     rows[0].effects.effect = Estimate::nan(10, 1);
     report(&mut rows, &ReportOpts::default());
-    assert!(e3_q(&rows, 0).is_nan());
+    assert!(e3(&rows, 0).is_nan());
     assert_eq!(rows[0].verdict.code(), "control_failed");
-
-    // Each section is its own family.
-    let mut rows = vec![
-        row("all", "L1", 10.0, 10.0, 2.5, 0.1),
-        row("s1", "L1", 0.0, 10.0, 2.5, 0.1),
-    ];
-    report(&mut rows, &ReportOpts::default());
-    assert!(e3_q(&rows, 0) < 0.05 && e3_q(&rows, 1).is_nan());
 }
 
 /// Beside a significant effect the conservative verdict: the effect must
@@ -359,7 +348,7 @@ fn controls_are_corrected_among_significant_effects() {
 #[test]
 fn a_verdict_needs_a_specific_effect_and_the_control_checked() {
     let judged = |change: &dyn Fn(&mut EffectRow)| {
-        let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.1)];
+        let mut rows = among_nulls(vec![row("all", "L1", 10.0, 10.0, 0.0, 0.1)]);
         change(&mut rows[0]);
         report(&mut rows, &ReportOpts::default());
         (rows[0].verdict.code(), rows[0].warnings.clone())
@@ -382,24 +371,43 @@ fn a_verdict_needs_a_specific_effect_and_the_control_checked() {
     assert!(w.contains("receptor-negative receivers could not"), "{w}");
 }
 
-/// One control decides: an effect that exceeds the receptor-negative
-/// receivers' is supported, with nothing else to check.
-#[test]
-fn an_effect_exceeding_the_receptor_negative_control_is_supported() {
-    let mut rows = vec![row("all", "L1", 10.0, 10.0, 0.0, 0.1)];
-    report(&mut rows, &ReportOpts::default());
-    assert_eq!(rows[0].verdict, Verdict::Supported, "{}", rows[0].warnings);
-    assert!(rows[0].warnings.is_empty(), "{}", rows[0].warnings);
-}
-
 /// A hidden field moves the control too, so a significant control does not
 /// rule out an effect that clearly exceeds it: the verdict stands and the
 /// warning says what responded.
 #[test]
 fn a_significant_control_the_effect_exceeds_is_a_warning_not_a_veto() {
-    let mut rows = vec![row("all", "L1", 20.0, 10.0, 5.0, 0.1)];
+    let mut rows = among_nulls(vec![row("all", "L1", 20.0, 10.0, 5.0, 0.1)]);
     report(&mut rows, &ReportOpts::default());
     assert_eq!(rows[0].verdict, Verdict::Supported);
     let w = &rows[0].warnings;
     assert!(w.contains("receptor-negative receivers respond"), "{w}");
+}
+
+/// A family too small for a local fdr tests its p-values by Bonferroni over
+/// its finite ones: a strong pair passes, a merely nominal one does not.
+#[test]
+fn a_small_family_tests_its_p_values_by_bonferroni() {
+    let mut rows: Vec<EffectRow> = (0..40)
+        .map(|k| row("all", &format!("N{k}"), quantile(k * 3), 0.0, 0.0, 0.1))
+        .collect();
+    rows[0] = row("all", "L1", 8.0, 8.0, -2.0, 0.1);
+    // p ≈ 0.012: below 0.05 alone, above 0.05 / 40.
+    rows[1] = row("all", "L2", 2.5, 8.0, -6.0, 0.1);
+    report(&mut rows, &ReportOpts::default());
+    assert!(rows[0].effect_dr_lfdr.empirical_null.is_nan());
+    assert_eq!(rows[0].verdict, Verdict::Supported, "{}", rows[0].warnings);
+    assert_eq!(rows[1].verdict, Verdict::ColocationOnly);
+}
+
+/// A p that underflowed, or an SE of 0, keeps its pair in the fit at the
+/// largest score rather than dropping it.
+#[test]
+fn the_strongest_pairs_stay_in_the_local_fdr() {
+    let mut rows = among_nulls(vec![row("all", "L1", 10.0, 10.0, 0.0, 0.1)]);
+    rows[0].effects.competent = est(400.0, 1.0);
+    rows[0].coexpr_se = 0.0;
+    report(&mut rows, &ReportOpts::default());
+    assert!(rows[0].effect_dr_lfdr.empirical_null < 1e-6);
+    assert!(rows[0].coexpr_lfdr.empirical_null < 1e-6);
+    assert_eq!(rows[0].verdict, Verdict::Supported, "{}", rows[0].warnings);
 }

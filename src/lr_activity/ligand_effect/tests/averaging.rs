@@ -554,7 +554,7 @@ fn skipped_fits_change_no_output() {
 
 /// A thin competent arm skips the fits: the receptor-negative control checks
 /// an estimate the pair does not have, and does not enter its family's
-/// q-values.
+/// local fdrs.
 #[test]
 fn a_thin_headline_drops_its_controls() {
     let mut w = world(8, 0.3, false);

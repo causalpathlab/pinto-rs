@@ -2,21 +2,20 @@
 
 use super::compare::SimRun;
 use super::summary::PooledEffect;
-use super::write::sim_cols;
+use super::write::{refuse_q_value_table, sim_cols};
 use crate::lr_activity::ligand_effect::simulate::{
     ConfoundShape, ConfounderKind, Scenario, COMPARED,
 };
 use crate::lr_activity::ligand_effect::verdict::Verdict;
 
 /// The effect against one negative control: the effect minus the
-/// control's (log rate ratio), and the two-sided q of that difference, so a
-/// small q can also mean the effect falls short of the control. Tested
-/// among the pairs with an effect, so NaN for the rest and for a control
-/// that could not be checked.
+/// control's (log rate ratio), and the local fdr of that difference
+/// (empirical null), so a small lfdr can also mean the effect falls short of
+/// the control; NaN for a control that could not be checked.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Control {
     pub over: f64,
-    pub q: f64,
+    pub lfdr: f64,
 }
 
 /// One negative control as the viewer reads it.
@@ -25,9 +24,9 @@ pub struct ControlSpec {
     pub short: &'static str,
     /// Its name for agents.
     pub key: &'static str,
-    /// The columns of the effect minus it, and of that difference's q.
+    /// The columns of the effect minus it, and of that difference's lfdr.
     pub column: &'static str,
-    pub column_q: &'static str,
+    pub column_lfdr: &'static str,
 }
 
 /// The negative controls of [`PairRow::controls`], in its order.
@@ -35,26 +34,8 @@ pub const CONTROLS: [ControlSpec; 1] = [ControlSpec {
     short: "receptor−",
     key: "receptor_negative",
     column: "effect_dr_contrast",
-    column_q: "effect_dr_contrast_q",
+    column_lfdr: "effect_dr_contrast_lfdr",
 }];
-
-/// The name a column of `{out}.lra.parquet` had before 0.17.5, when the
-/// headline was `effect_competent` and its p and q `effect_p` and `effect_q`;
-/// the name itself when it did not change.
-fn before_0_17_5(name: &str) -> &str {
-    match name {
-        "effect_dr" => "effect_competent",
-        "effect_dr_se" => "effect_competent_se",
-        "effect_dr_p" => "effect_p",
-        "effect_dr_q" => "effect_q",
-        "effect_dr_pct" => "effect_pct",
-        "effect_dr_pct_lo" => "effect_pct_lo",
-        "effect_dr_pct_hi" => "effect_pct_hi",
-        "effect_dr_contrast" => "effect_contrast",
-        "effect_dr_contrast_q" => "effect_contrast_q",
-        other => other,
-    }
-}
 
 /// A pooled row of `{out}.lra.parquet` as the viewer lists it.
 #[derive(Clone, Debug, PartialEq)]
@@ -67,12 +48,13 @@ pub struct PairRow {
     pub verdict: Verdict,
     pub note: Box<str>,
     pub warnings: Box<str>,
-    /// The headline competent effect (log rate ratio), its SE, p and q.
+    /// The headline competent effect (log rate ratio), its SE, p and local
+    /// fdr, and co-expression's local fdr (both under the empirical null).
     pub effect: f64,
     pub effect_dr_se: f64,
     pub effect_dr_p: f64,
-    pub effect_dr_q: f64,
-    pub coexpr_q: f64,
+    pub effect_dr_lfdr: f64,
+    pub coexpr_lfdr: f64,
     /// The headline as a percent change, `exp(effect) − 1`, with its 95%
     /// interval.
     pub pct: f64,
@@ -107,7 +89,7 @@ impl From<&PairRow> for PooledEffect {
             verdict: r.verdict,
             effect: r.effect,
             effect_dr_p: r.effect_dr_p,
-            effect_dr_q: r.effect_dr_q,
+            effect_dr_lfdr: r.effect_dr_lfdr,
             pct: r.pct,
             pct_lo: r.pct_lo,
             pct_hi: r.pct_hi,
@@ -116,7 +98,7 @@ impl From<&PairRow> for PooledEffect {
 }
 
 /// The pooled rows of a contact-effect table, in table order, and which
-/// pairs its q-values were corrected over (its `q_scope`: [`super::Q_SCOPE_ALL`],
+/// pairs its local fdrs were fitted over (its `q_scope`: [`super::Q_SCOPE_ALL`],
 /// or a `--only` subset's words).
 pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
     use legume_numeric::matrix::parquet::read_table_columns;
@@ -133,8 +115,8 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
         "effect_dr",
         "effect_dr_se",
         "effect_dr_p",
-        "effect_dr_q",
-        "coexpr_q",
+        "effect_dr_lfdr",
+        "coexpr_lfdr",
         "effect_dr_pct",
         "effect_dr_pct_lo",
         "effect_dr_pct_hi",
@@ -149,18 +131,15 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
     let n = numbers.len();
     let numbers: Vec<&str> = numbers
         .into_iter()
-        .chain(CONTROLS.iter().flat_map(|c| [c.column, c.column_q]))
+        .chain(CONTROLS.iter().flat_map(|c| [c.column, c.column_lfdr]))
         .collect();
-    // a table before 0.17.5 names the headline's columns as it did then
-    let (s, mut x) = read_table_columns(path, &strings, &numbers).or_else(|e| {
-        let old: Vec<&str> = numbers.iter().map(|n| before_0_17_5(n)).collect();
-        read_table_columns(path, &strings, &old).map_err(|_| e)
-    })?;
+    refuse_q_value_table(path)?;
+    let (s, mut x) = read_table_columns(path, &strings, &numbers)?;
     let q_scope = s[6]
         .first()
         .cloned()
         .unwrap_or_else(|| super::Q_SCOPE_ALL.into());
-    // Each control's difference and its q, after tau_top and its weight.
+    // Each control's difference and its lfdr, after tau_top and its weight.
     let controls = x.split_off(n);
     let controls: Vec<&[Vec<f64>]> = controls.chunks(2).collect();
     let (tau_top, tau_top_weight) = (&x[n - 2], &x[n - 1]);
@@ -186,8 +165,8 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
                 effect: x[0][i],
                 effect_dr_se: x[1][i],
                 effect_dr_p: x[2][i],
-                effect_dr_q: x[3][i],
-                coexpr_q: x[4][i],
+                effect_dr_lfdr: x[3][i],
+                coexpr_lfdr: x[4][i],
                 pct: x[5][i],
                 pct_lo: x[6][i],
                 pct_hi: x[7][i],
@@ -199,7 +178,7 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
                 tau_top_weight: tau_top_weight[i],
                 controls: std::array::from_fn(|c| Control {
                     over: controls[c][0][i],
-                    q: controls[c][1][i],
+                    lfdr: controls[c][1][i],
                 }),
             })
         })

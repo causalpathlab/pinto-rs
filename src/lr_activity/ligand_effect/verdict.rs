@@ -5,9 +5,11 @@
 pub struct Evidence {
     /// The headline (the competent effect) has an estimate.
     pub estimable: bool,
-    /// The headline's q is below the FDR level.
+    /// The headline counts: its local fdr below the level, or in a family
+    /// too small for one its p below the Bonferroni level
+    /// ([`super::report::report`]).
     pub effect: bool,
-    /// The co-expression q is below the FDR level.
+    /// Co-expression counts, by the same rule.
     pub coexpr: bool,
     /// A control beside a significant effect did not hold: the effect does not
     /// exceed the incompetent effect, or that could not be checked.

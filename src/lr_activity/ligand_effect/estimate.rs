@@ -75,7 +75,7 @@
 //! that section's receivers.
 //!
 //! Inference across pairs ([`super::report::report`]) runs once every pair is in: see
-//! there for the q-values, the identifiability diagnostics and the
+//! there for the local fdrs, the identifiability diagnostics and the
 //! verdict labels.
 //!
 //! **Choices averaged, not asked for.** Where the analysis has a choice
@@ -149,7 +149,7 @@ pub struct PairData<'a> {
 }
 
 /// Rows for the pooled tissue, each section and each named receiver cell
-/// type. Verdicts and q-values
+/// type. Verdicts and local fdrs
 /// are left empty for [`super::report::report`], which needs every pair.
 ///
 /// With [`PairData::reweighted`], the two weightings of the program are
@@ -305,7 +305,7 @@ struct PairReads<'a> {
 }
 
 impl PairReads<'_> {
-    /// The row of one scope, its verdict and q-values left empty.
+    /// The row of one scope, its verdict and local fdrs left empty.
     fn row(
         &self,
         label: &str,

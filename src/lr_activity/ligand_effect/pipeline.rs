@@ -551,7 +551,7 @@ fn record_tables(
 
 /// Write the effect and curve tables of `rows` (`n_pairs` pairs) under
 /// `out` (with `celltype` the per-type-pair table) and record them; the
-/// effect table's path and the q-values' scope.
+/// effect table's path and the local fdrs' scope.
 fn write_tables(
     out: &str,
     only: &[Box<str>],
@@ -601,7 +601,7 @@ fn print_run_summary(
     }
 }
 
-/// `--shard`: the shard's pairs' rows, before the q-values, to
+/// `--shard`: the shard's pairs' rows, before the local fdrs, to
 /// [`shard::path`]; no table, nothing recorded.
 fn write_shard(
     a: &Settings<'_>,

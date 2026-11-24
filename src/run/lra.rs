@@ -816,7 +816,7 @@ fn shard_note(shard: Shard, out: &str, link_community: Option<i64>) -> String {
         "A shard writes no table and records nothing in the manifest. Run every shard \
          I/{n} (I from 0 to {last}) with the same arguments, each as its own job (a Slurm \
          array task, I = $SLURM_ARRAY_TASK_ID); once all {n} are done, run_lra_merge {} \
-         writes the tables of the whole run, its q-values over every pair.",
+         writes the tables of the whole run, its local fdrs over every pair.",
         merge_args(shard, out, link_community),
         n = shard.count,
         last = shard.count - 1,
@@ -871,7 +871,7 @@ fn lra_reply(
     let mut reply = if method == LraMethod::ContactEffect {
         let mut r = table_summary(&made[0])?;
         if !a.only.is_empty() {
-            r["q_scope"] = "q corrected within this --only subset, not over every pair; \
+            r["q_scope"] = "judged within this --only subset, not over every pair; \
                             recorded under lra.subsets, the full table unchanged"
                 .into();
         }
@@ -901,14 +901,17 @@ fn lra_reply(
 /// A contact-effect table's pooled pairs in a few lines
 /// ([`effects_summary`]), and how to read it.
 fn table_summary(table: &Path) -> anyhow::Result<Value> {
-    let mut r = effects_summary(&read_pooled_effects(&table.to_string_lossy())?);
+    let rows = read_pooled_effects(&table.to_string_lossy())
+        .map_err(|e| anyhow::anyhow!("{}: {e}", table.display()))?;
+    let mut r = effects_summary(&rows);
     r["reading"] =
         "one row per pair and section (`all` pooled); verdict_note says why in words".into();
     Ok(r)
 }
 
 /// The pooled pairs in a few lines: how many, each verdict's count, and the
-/// strongest that survived the controls (percent change with its 95% interval, and q).
+/// strongest that survived the controls (percent change with its 95% interval, and
+/// local fdr).
 pub(super) fn effects_summary(rows: &[output::PooledEffect]) -> Value {
     let counts: Map<String, Value> = Verdict::counts(rows.iter().map(|r| r.verdict))
         .iter()
@@ -923,14 +926,14 @@ pub(super) fn effects_summary(rows: &[output::PooledEffect]) -> Value {
                 "receptor": r.receptor,
                 "verdict": r.verdict.code(),
                 "change": percent_text(r.pct, r.pct_lo, r.pct_hi),
-                "q": sig(r.effect_dr_q),
+                "lfdr": sig(r.effect_dr_lfdr),
             })
         })
         .collect();
     json!({ "pairs": rows.len(), "verdicts": counts, "top": top })
 }
 
-/// A q-value to three significant digits; null when there is none.
+/// A local fdr to three significant digits; null when there is none.
 fn sig(x: f64) -> Value {
     format!("{x:.2e}")
         .parse::<f64>()

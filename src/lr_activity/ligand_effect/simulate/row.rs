@@ -32,8 +32,9 @@ pub struct SimRow {
     pub steps: [Estimate; 3],
     /// The competent effect minus the receptor-negative one.
     pub contrast: Estimate,
-    /// The verdict `lra` would give this run alone, its q-values being its
-    /// p-values: more lenient than a run with many pairs to correct over.
+    /// The verdict `lra` would give this run tested alone, its p-values at
+    /// the small-family level (a family of one has no local fdr): more
+    /// lenient than a run judged among many pairs by their local fdrs.
     pub verdict: Verdict,
     /// Share of competent receivers whose seen exposure is not their true
     /// exposure.

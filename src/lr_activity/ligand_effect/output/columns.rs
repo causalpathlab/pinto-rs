@@ -1,6 +1,7 @@
 //! Building a parquet table one named column at a time.
 
 use crate::lr_activity::ligand_effect::inference::Estimate;
+use crate::lr_activity::ligand_effect::rows::LocalFdr;
 use legume_numeric::matrix::parquet::{
     parquet_add_bytearray, parquet_add_numeric_column, parquet_add_string_column, ParquetWriter,
 };
@@ -75,6 +76,14 @@ impl<'r, T> Columns<'r, T> {
     pub(super) fn est(&mut self, name: &str, f: impl Fn(&T) -> Estimate) -> &mut Self {
         self.f(name, |r| f(r).theta)
             .f(&format!("{name}_se"), |r| f(r).se)
+    }
+
+    /// `{name}_lfdr` (the empirical null) and `{name}_lfdr_theoretical_null`.
+    pub(super) fn lfdr(&mut self, name: &str, f: impl Fn(&T) -> LocalFdr) -> &mut Self {
+        self.f(&format!("{name}_lfdr"), |r| f(r).empirical_null)
+            .f(&format!("{name}_lfdr_theoretical_null"), |r| {
+                f(r).theoretical_null
+            })
     }
 
     /// `name`, `name_se`, and the 95% interval as `name_lo` and `name_hi`.

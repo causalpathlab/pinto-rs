@@ -1,6 +1,7 @@
 //! An estimate with its standard error, and the t and normal reference it is
 //! read against.
 
+use crate::util::local_fdr::std_normal_pdf;
 use special::{Beta, Error as _};
 
 /// The `df` of a not-estimable estimate whose rows lie in fewer than two
@@ -61,6 +62,45 @@ impl Estimate {
     pub fn rejects(&self) -> bool {
         self.z().abs() > self.crit()
     }
+}
+
+/// `|z|` with two-sided normal p `p`: `2 P(Z ≥ |z|) = p`, solved by Newton
+/// steps on `ln p`, accurate where `1 − p` rounds to 1; infinite for a p of
+/// 0 (one that underflowed), NaN for NaN.
+pub fn normal_score_of_two_sided_p(p: f64) -> f64 {
+    if p.is_nan() {
+        return f64::NAN;
+    }
+    if p >= 1.0 {
+        return 0.0;
+    }
+    if p <= 0.0 {
+        return f64::INFINITY;
+    }
+    let target = p.ln();
+    // Start from the tail asymptote, z² ≈ −2 ln p − ln(−2π ln p) (and 1
+    // where p is not small); the log of the tail is concave, so Newton
+    // converges from either side in a few steps.
+    let lp = -2.0 * target;
+    let mut z = if lp > 2.0 {
+        (lp - (std::f64::consts::PI * lp).ln()).max(0.0).sqrt()
+    } else {
+        1.0
+    };
+    for _ in 0..50 {
+        let tail = 2.0 * upper_normal_p(z);
+        // A subnormal p: the tail underflows before the step converges.
+        if tail <= 0.0 {
+            break;
+        }
+        // d ln(2Q(z)) / dz = −2φ(z) / 2Q(z)
+        let step = (tail.ln() - target) * tail / (2.0 * std_normal_pdf(z));
+        z = (z + step).max(0.0);
+        if step.abs() < 1e-12 * z.max(1.0) {
+            break;
+        }
+    }
+    z
 }
 
 /// Two-sided 5% normal critical value.

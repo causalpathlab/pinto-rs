@@ -99,8 +99,8 @@ pub struct LraInputArgs {
                      `cell` column and a `region` (or `label`) column; without those names,\n\
                      the first two columns. Each region gets an indicator per section among\n\
                      the confounders (the smooth fields cannot follow a sharp region edge),\n\
-                     and each pair a row per region, `section` = `region:<name>`, its q\n\
-                     corrected within that region. Cells it leaves out are `unassigned`,\n\
+                     and each pair a row per region, `section` = `region:<name>`, its local fdr\n\
+                     fitted within that region. Cells it leaves out are `unassigned`,\n\
                      which gets no row."
     )]
     pub region: Option<Box<str>>,
@@ -216,7 +216,7 @@ pub struct SrtLrActivityArgs {
                      {out}.lra.only-<tag>.parquet (and .curve.parquet, and .celltype.parquet\n\
                      with --marginal-baselines), never over the full table, and is recorded\n\
                      apart in the manifest (outputs.lra.subsets).\n\
-                     Its q-values are corrected within the subset only (column q_scope).\n\
+                     Its local fdrs are fitted within the subset only (column q_scope).\n\
                      The receivers and each pair's estimate are those of the full run."
     )]
     pub only: Vec<Box<str>>,
@@ -231,8 +231,8 @@ pub struct SrtLrActivityArgs {
                      --array=0-<N-1>). The ligands are dealt to the shards whole, the same\n\
                      way every time, and each pair comes out as the whole run estimates it.\n\
                      A shard writes {out}.lra.shard-I-of-N.cbor, its pairs before the\n\
-                     q-values, and no table; `pinto lra merge` reads all N and writes the\n\
-                     tables of the whole run, its q-values over every pair. Every shard\n\
+                     local fdrs, and no table; `pinto lra merge` reads all N and writes the\n\
+                     tables of the whole run, its local fdrs over every pair. Every shard\n\
                      takes the same flags but --shard and --out."
     )]
     pub shard: Option<crate::lr_activity::ligand_effect::shard::Shard>,
@@ -252,7 +252,7 @@ pub struct SrtLrActivityArgs {
                      keep the full contact graph. The table goes to\n\
                      {out}.lra.link-community-K.parquet (curve and cell-type tables\n\
                      beside it), recorded apart in the manifest (outputs.lra.subsets),\n\
-                     its q-values corrected within the community. One job per community\n\
+                     its local fdrs fitted within the community. One job per community\n\
                      (a job array); `pinto lra merge` collects them with the marginal\n\
                      table."
     )]
@@ -592,7 +592,7 @@ pub struct LraMergeArgs {
                      ({prefix}.lra.parquet) and the --link-community tables\n\
                      ({prefix}.lra.link-community-K.parquet), collected into\n\
                      {out}.lra.by-link-community.parquet with a link_community column\n\
-                     (`all` for the marginal rows); each keeps its own q-values."
+                     (`all` for the marginal rows); each keeps its own local fdrs."
     )]
     pub shards: Vec<String>,
 

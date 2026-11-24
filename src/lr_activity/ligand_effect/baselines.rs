@@ -56,7 +56,6 @@
 //! a few thousand receivers.
 
 use super::inference::upper_normal_p;
-use super::report::bh;
 use super::tissue::Tissue;
 use crate::lr_activity::edge_scores::jeffreys_log_odds;
 use crate::lr_activity::input::UNASSIGNED;
@@ -590,4 +589,20 @@ pub fn coexpression(
     }
     let (lor, se) = jeffreys_log_odds(n, n11, nl, nr);
     (lor as f64, se as f64)
+}
+
+/// Benjamini–Hochberg q-values, as the cell-type baseline's published
+/// method corrects its type pairs. Non-finite p are left out of the count
+/// and get NaN.
+pub fn bh(p: &[f64]) -> Vec<f64> {
+    let mut idx: Vec<usize> = (0..p.len()).filter(|&i| p[i].is_finite()).collect();
+    idx.sort_by(|&a, &b| p[a].total_cmp(&p[b]));
+    let m = idx.len() as f64;
+    let mut q = vec![f64::NAN; p.len()];
+    let mut run = 1.0f64;
+    for (r, &i) in idx.iter().enumerate().rev() {
+        run = run.min(p[i] * m / (r + 1) as f64);
+        q[i] = run;
+    }
+    q
 }

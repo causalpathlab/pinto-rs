@@ -10,7 +10,7 @@
 
 use super::super::gene::GeneMap;
 use super::super::lra::{
-    change, lra_command, lra_table, next_verdict, q_text, Filter, LraView, PairShow, TableRef,
+    change, lfdr_text, lra_command, lra_table, next_verdict, Filter, LraView, PairShow, TableRef,
 };
 use super::super::render::Style;
 use super::super::{curve, Level, StillPair};
@@ -485,7 +485,7 @@ impl App<'_> {
         };
         let table = v.table();
         let rows = &table.rows;
-        let subset = table.subset_corrected();
+        let subset = table.subset_fitted();
         out.push((
             Line::from(vec![
                 Span::styled(" pairs ", bold),
@@ -507,7 +507,7 @@ impl App<'_> {
         ));
         if subset {
             out.push((
-                Line::styled(" subset-corrected: q within this subset", dim),
+                Line::styled(" subset-fitted: lfdr within this subset", dim),
                 None,
             ));
         }
@@ -580,12 +580,12 @@ impl App<'_> {
             };
             let plain = TStyle::default();
             prose(&change(row), plain, 2);
-            let corrected = if subset { " (subset-corrected)" } else { "" };
+            let fitted_within = if subset { " (subset-fitted)" } else { "" };
             prose(
                 &format!(
-                    "q {}{corrected} · coexpr q {}",
-                    q_text(row.effect_dr_q),
-                    q_text(row.coexpr_q)
+                    "lfdr {}{fitted_within} · coexpr lfdr {}",
+                    lfdr_text(row.effect_dr_lfdr),
+                    lfdr_text(row.coexpr_lfdr)
                 ),
                 plain,
                 2,
@@ -612,25 +612,25 @@ impl App<'_> {
                 plain,
                 2,
             );
-            // The effect against the control, signed, with its two-sided
-            // q: the verdict and the reasons say whether it passed.
-            if row.controls.iter().any(|c| c.q.is_finite()) {
+            // The effect against the control, signed, with its local fdr:
+            // the verdict and the reasons say whether it passed.
+            if row.controls.iter().any(|c| c.lfdr.is_finite()) {
                 let each: Vec<String> = CONTROLS
                     .iter()
                     .zip(&row.controls)
                     .map(|(spec, c)| {
                         let name = spec.short;
-                        if c.over.is_finite() && c.q.is_finite() {
+                        if c.over.is_finite() && c.lfdr.is_finite() {
                             let pct = super::super::curve::pct(c.over);
                             let change = percent_short(pct, pct, pct);
-                            format!("{name} {change} q {}", q_text(c.q))
+                            format!("{name} {change} lfdr {}", lfdr_text(c.lfdr))
                         } else {
                             format!("{name} —")
                         }
                     })
                     .collect();
                 prose(
-                    &format!("effect − control{corrected}: {}", each.join(" · ")),
+                    &format!("effect − control{fitted_within}: {}", each.join(" · ")),
                     plain,
                     3,
                 );
@@ -687,7 +687,7 @@ impl App<'_> {
             let right = format!(
                 " {:>7} {:>7} {:<VERDICT_W$}",
                 percent_short(r.pct, r.pct_lo, r.pct_hi),
-                q_text(r.effect_dr_q),
+                lfdr_text(r.effect_dr_lfdr),
                 short(r.verdict),
             );
             let name_w = (width + 1).saturating_sub(2 + right.chars().count()).max(8);

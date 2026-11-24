@@ -13,7 +13,7 @@ use crate::util::metadata::{LraOptions, LraSubset};
 use crate::view::color::Theme;
 use crate::view::curve::{self, ticks, Curve};
 use crate::view::lra::{
-    lra_command, lra_table, next_verdict, q_text, visible, Filter, LraView, Receivers, Sort,
+    lfdr_text, lra_command, lra_table, next_verdict, visible, Filter, LraView, Receivers, Sort,
 };
 use crate::view::Base;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -28,10 +28,10 @@ const SIDE: usize = 10;
 pub(crate) const WARNING: &str =
     "the effect does not exceed the one in receptor-negative receivers";
 
-/// `{out}.lra.parquet` of `rows` (ligand, receptor, verdict, q, pct,
+/// `{out}.lra.parquet` of `rows` (ligand, receptor, verdict, lfdr, pct,
 /// threshold), each pooled, with a section row that is not; `scope` its
 /// `q_scope`; the threshold the average leans on most (2, at weight 0.8),
-/// the effect minus the control with its q (-0.05 at 0.01 over
+/// the effect minus the control with its lfdr (-0.05 at 0.01 over
 /// receptor-negative receivers, significantly short of them) and
 /// [`WARNING`].
 fn write_table(path: &Path, rows: &[(&str, &str, &str, f32, f32, f32)], scope: &str) {
@@ -70,12 +70,12 @@ fn write_table_as(
     let counts = num(&|_| 10.0);
     let names: Vec<Box<str>> = (0..n).map(|i| i.to_string().into()).collect();
     let (top, weight) = (num(&|_| 2.0), num(&|_| 0.8));
-    let (contrast, contrast_q) = (num(&|_| -0.05), num(&|_| 0.01));
+    let (contrast, contrast_lfdr) = (num(&|_| -0.05), num(&|_| 0.01));
     let later = [
         ("tau_top", &top),
         ("tau_top_weight", &weight),
         ("effect_dr_contrast", &contrast),
-        ("effect_dr_contrast_q", &contrast_q),
+        ("effect_dr_contrast_lfdr", &contrast_lfdr),
     ];
     let later = later.iter().map(|(n, v)| (name(n).into(), Column::F32(v)));
     write_named_table(
@@ -92,8 +92,8 @@ fn write_table_as(
             (name("effect_dr").into(), Column::F32(&effect)),
             (name("effect_dr_se").into(), Column::F32(&se)),
             (name("effect_dr_p").into(), Column::F32(&q)),
-            (name("effect_dr_q").into(), Column::F32(&q)),
-            ("coexpr_q".into(), Column::F32(&q)),
+            (name("effect_dr_lfdr").into(), Column::F32(&q)),
+            (name("coexpr_lfdr").into(), Column::F32(&q)),
             (name("effect_dr_pct").into(), Column::F32(&pct)),
             (name("effect_dr_pct_lo").into(), Column::F32(&lo)),
             (name("effect_dr_pct_hi").into(), Column::F32(&hi)),
@@ -220,7 +220,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
     write_table(
         Path::new(&only),
         &[("L1", "R1", "supported", 0.01, 25.0, 0.0)],
-        "q corrected within the --only subset (1 of 3 pairs)",
+        "judged within the --only subset (1 of 3 pairs)",
     );
     let subset = LraSubset {
         only: vec!["L1:R1".into()],
@@ -300,7 +300,7 @@ pub(crate) fn receivers(base: &Base, contacts: Contacts) -> Receivers {
 
 // * The list
 
-fn row(ligand: &str, receptor: &str, verdict: Verdict, q: f64, pct: f64) -> PairRow {
+fn row(ligand: &str, receptor: &str, verdict: Verdict, lfdr: f64, pct: f64) -> PairRow {
     PairRow {
         ligand: ligand.into(),
         receptor: receptor.into(),
@@ -310,9 +310,9 @@ fn row(ligand: &str, receptor: &str, verdict: Verdict, q: f64, pct: f64) -> Pair
         warnings: "".into(),
         effect: (1.0 + pct / 100.0).ln(),
         effect_dr_se: 0.1,
-        effect_dr_p: q / 2.0,
-        effect_dr_q: q,
-        coexpr_q: q,
+        effect_dr_p: lfdr / 2.0,
+        effect_dr_lfdr: lfdr,
+        coexpr_lfdr: lfdr,
         pct,
         pct_lo: pct - 1.0,
         pct_hi: pct + 1.0,
@@ -324,7 +324,7 @@ fn row(ligand: &str, receptor: &str, verdict: Verdict, q: f64, pct: f64) -> Pair
         tau_top_weight: 1.0,
         controls: [Control {
             over: f64::NAN,
-            q: f64::NAN,
+            lfdr: f64::NAN,
         }; 1],
     }
 }
@@ -350,7 +350,7 @@ fn rows() -> Vec<PairRow> {
 }
 
 #[test]
-fn the_list_sorts_by_q_effect_or_name_unestimable_last() {
+fn the_list_sorts_by_lfdr_effect_or_name_unestimable_last() {
     let r = rows();
     let by = |sort| {
         names(
@@ -365,7 +365,7 @@ fn the_list_sorts_by_q_effect_or_name_unestimable_last() {
         )
     };
     assert_eq!(
-        by(Sort::Q),
+        by(Sort::Lfdr),
         [
             "LIGA1:RECA1",
             "LIGB1:RECB1",
@@ -394,7 +394,7 @@ fn the_list_sorts_by_q_effect_or_name_unestimable_last() {
             "LIGB1:RECE1_RECE2"
         ]
     );
-    assert_eq!(Sort::Q.next().next().next(), Sort::Q);
+    assert_eq!(Sort::Lfdr.next().next().next(), Sort::Lfdr);
 }
 
 #[test]
@@ -526,12 +526,12 @@ fn the_curves_range_holds_the_average() {
 }
 
 #[test]
-fn q_values_read_in_a_few_characters() {
-    assert_eq!(q_text(0.0123), "0.012");
-    assert_eq!(q_text(2e-5), "2e-5");
+fn local_fdrs_read_in_a_few_characters() {
+    assert_eq!(lfdr_text(0.0123), "0.012");
+    assert_eq!(lfdr_text(2e-5), "2e-5");
     // One too small for the table's f32 still reads as small, not as `0e0`.
-    assert_eq!(q_text(0.0), "<1e-45");
-    assert_eq!(q_text(f64::NAN), "—");
+    assert_eq!(lfdr_text(0.0), "<1e-45");
+    assert_eq!(lfdr_text(f64::NAN), "—");
 }
 
 #[test]
@@ -614,7 +614,7 @@ fn the_runs_tables_are_the_full_one_then_its_subsets() {
     assert!(tables[1].curve.is_none());
     let mut v = LraView::new(tables).unwrap().unwrap();
     assert_eq!(v.rows().len(), 3, "pooled rows only");
-    assert!(!v.table().subset_corrected());
+    assert!(!v.table().subset_fitted());
     v.select("l1:r1").unwrap();
     let e = v.select("L1:R2").unwrap_err().to_string();
     assert!(e.contains("nearest: L1:R1"), "{e}");
@@ -626,10 +626,10 @@ fn the_runs_tables_are_the_full_one_then_its_subsets() {
     let c = v.curve().unwrap();
     assert_eq!(c.top, Some(2.0));
     assert_eq!(c.average, Some(row.effect));
-    // The subset keeps the pair selected, its q subset-corrected.
+    // The subset keeps the pair selected, its lfdr fitted within the subset.
     v.load(1).unwrap();
     assert_eq!(v.selected_row().unwrap().name(), "L1:R1");
-    assert!(v.table().subset_corrected());
+    assert!(v.table().subset_fitted());
     assert!(&*v.table().q_scope != Q_SCOPE_ALL);
     assert!(v.curve().unwrap().points.is_empty());
     assert!(v.curve().unwrap().title.contains("subset"));
@@ -713,7 +713,7 @@ fn view_lra_lists_selects_and_view_map_draws_the_pair() {
     let e = call(&mut open, json!({"sort": "p"}))
         .unwrap_err()
         .to_string();
-    assert!(e.contains("q, effect, name"), "{e}");
+    assert!(e.contains("lfdr, effect, name"), "{e}");
 
     // A pair selected is drawn by view_map: its classes, then its exposure.
     let base = Base::load(&prefix, "auto", Theme::Dark).unwrap();
@@ -769,10 +769,10 @@ fn view_lra_lists_selects_and_view_map_draws_the_pair() {
     assert!(s["pair"].is_null());
     assert_eq!(s["layer"], "argmax");
 
-    // The subset table, by its list: the pair stays, its q subset-corrected.
+    // The subset table, by its list: the pair stays, its lfdr fitted within the subset.
     let r = call(&mut open, json!({"table": "l1:r1", "pair": "L1:R1"})).unwrap();
     assert_eq!(r["table"], "only L1:R1");
-    assert_eq!(r["selected"]["subset_corrected"], true);
+    assert_eq!(r["selected"]["subset_fitted"], true);
     assert!(r["q_scope"].as_str().unwrap().contains("--only subset"));
     let e = call(&mut open, json!({"pair": "X:Y"}))
         .unwrap_err()
@@ -894,12 +894,12 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
     assert_eq!(r["selected"]["drawn"], true);
     // The threshold the average weighs most.
     assert_eq!(r["selected"]["tau_top"], 2.0);
-    // The effect minus the control, signed, with its q.
+    // The effect minus the control, signed, with its lfdr.
     let c = &r["selected"]["controls"];
     let near = |v: &serde_json::Value, x: f64| (v.as_f64().unwrap() - x).abs() < 1e-6;
     assert_eq!(c[0]["control"], "receptor_negative", "{c}");
     assert!(
-        near(&c[0]["effect_minus_control"], -0.05) && near(&c[0]["q"], 0.01),
+        near(&c[0]["effect_minus_control"], -0.05) && near(&c[0]["lfdr"], 0.01),
         "{c}"
     );
     assert!(c[1].is_null(), "one control: {c}");
@@ -909,7 +909,7 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
     write_table(
         &other,
         &[("L1", "R1", "supported", 0.01, 25.0, 0.5)],
-        "q corrected within the --only subset (1 of 3 pairs)",
+        "judged within the --only subset (1 of 3 pairs)",
     );
     let r = call(&mut open, json!({"table": other.to_string_lossy()})).unwrap();
     assert_eq!(r["selected"]["pair"], "L1:R1");
@@ -917,31 +917,22 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
     assert_eq!(r["selected"]["map"]["threshold"], 0.5);
 }
 
-/// A table from before 0.17.5, its headline and control under their
-/// old names (`effect_competent`, `effect_p`, `effect_contrast`, ...), reads
-/// as one written now.
+/// A table from before local fdrs, with BH q-values where the lfdrs are now,
+/// is refused with what to do: its q is not shown as an lfdr.
 #[test]
-fn a_table_before_the_renaming_still_reads() {
+fn a_table_with_q_values_is_refused() {
     use crate::lr_activity::ligand_effect::output::read_pair_rows;
     let dir = tempfile::tempdir().unwrap();
     let rows = [("L1", "R1", "supported", 0.01, 25.0, 0.5)];
-    let (new, old) = (
-        dir.path().join("new.parquet"),
-        dir.path().join("old.parquet"),
-    );
-    write_table(&new, &rows, "all pairs");
+    let old = dir.path().join("old.parquet");
     write_table_as(&old, &rows, "all pairs", |n| match n {
-        "effect_dr" => "effect_competent",
-        "effect_dr_se" => "effect_competent_se",
-        "effect_dr_p" => "effect_p",
-        "effect_dr_q" => "effect_q",
-        "effect_dr_pct" => "effect_pct",
-        "effect_dr_pct_lo" => "effect_pct_lo",
-        "effect_dr_pct_hi" => "effect_pct_hi",
-        "effect_dr_contrast" => "effect_contrast",
-        "effect_dr_contrast_q" => "effect_contrast_q",
+        "effect_dr_lfdr" => "effect_dr_q",
+        "coexpr_lfdr" => "coexpr_q",
+        "effect_dr_contrast_lfdr" => "effect_dr_contrast_q",
         other => other,
     });
-    let read = |p: &Path| read_pair_rows(&p.to_string_lossy()).unwrap();
-    assert_eq!(read(&old), read(&new));
+    let e = read_pair_rows(&old.to_string_lossy())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("rerun pinto lra"), "{e}");
 }

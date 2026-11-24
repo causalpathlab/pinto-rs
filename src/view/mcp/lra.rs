@@ -145,7 +145,7 @@ impl Open {
                     "pair": r.name(),
                     "verdict": r.verdict.code(),
                     "change": lra_layer::change(r),
-                    "q": opt_finite(r.effect_dr_q),
+                    "lfdr": opt_finite(r.effect_dr_lfdr),
                     "marked": v.marked.contains(&r.name()),
                 })
             })
@@ -160,16 +160,16 @@ impl Open {
                 "change": lra_layer::change(r),
                 "effect_dr": opt_finite(r.effect),
                 "effect_dr_se": opt_finite(r.effect_dr_se),
-                "q": opt_finite(r.effect_dr_q),
-                "coexpr_q": opt_finite(r.coexpr_q),
-                "subset_corrected": table.subset_corrected(),
+                "lfdr": opt_finite(r.effect_dr_lfdr),
+                "coexpr_lfdr": opt_finite(r.coexpr_lfdr),
+                "subset_fitted": table.subset_fitted(),
                 "threshold": opt_finite(r.threshold),
                 "tau_top": opt_finite(r.tau_top),
                 "tau_top_weight": opt_finite(r.tau_top_weight),
                 "controls": CONTROLS.iter().zip(&r.controls).map(|(spec, c)| json!({
                     "control": spec.key,
                     "effect_minus_control": opt_finite(c.over),
-                    "q": opt_finite(c.q),
+                    "lfdr": opt_finite(c.lfdr),
                 })).collect::<Vec<_>>(),
                 "receivers": r.n_receivers,
                 "competent": r.n_competent,
@@ -217,12 +217,13 @@ impl Open {
                         tau_top: the threshold the average weighs most, at weight \
                         tau_top_weight; threshold: the one the counts and the map read; \
                         controls: the effect minus the negative control \
-                        (receptor-negative receivers) as a log rate ratio, with its two-sided q \
-                        (so a small q with a negative difference falls short of the \
-                        control; verdict and warnings give the call), tested among the \
-                        pairs with an effect: null for the rest, for a control that could \
-                        not be checked, and in a table from before them; \
-                        q: Benjamini-Hochberg over the table's pairs (q_scope). With \
+                        (receptor-negative receivers) as a log rate ratio, with its local fdr \
+                        (so a small lfdr with a negative difference falls short of the \
+                        control; verdict and warnings give the call): null for a control \
+                        that could not be checked; \
+                        lfdr: Efron's local false discovery rate under the null fitted to \
+                        the table's pairs (q_scope), the probability the pair is null; null \
+                        when too few pairs are estimable to fit it (read effect_dr_p). With \
                         a pair, view_map draws it: senders (ligand+), receivers exposed or not \
                         (contact exposure above threshold) and receptor+ or not; show: exposure \
                         draws the exposure itself. view_export curve: true writes its \

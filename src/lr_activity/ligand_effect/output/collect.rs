@@ -2,8 +2,8 @@
 //! and the `--link-community` tables of one run, collected into
 //! `{out}.lra.by-link-community.parquet`.
 //!
-//! Every column of the tables is kept, lined up by name (each part's q-values were
-//! corrected within its own table, which its `q_scope` says), and a
+//! Every column of the tables is kept, lined up by name (each part's local fdrs were
+//! fitted within its own table, which its `q_scope` says), and a
 //! `link_community` column is added in front: `all` for the marginal table,
 //! `K` for `{prefix}.lra.link-community-K.parquet`.
 
@@ -62,6 +62,7 @@ pub fn collect_link_community_tables(tables: &[String], out: &str) -> anyhow::Re
     let mut batches: Vec<(String, RecordBatch)> = Vec::new();
     for table in tables {
         let link_community = link_community_of_table(table)?;
+        super::refuse_q_value_table(table).map_err(|e| anyhow::anyhow!("{table}: {e}"))?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(table)?)?.build()?;
         for batch in reader {
             let batch = batch?;

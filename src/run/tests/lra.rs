@@ -566,21 +566,21 @@ fn write_effects(path: &str) {
             ("verdict_note".into(), Column::Str(&blank)),
             ("warnings".into(), Column::Str(&blank)),
             ("effect_dr_se".into(), Column::F32(&zero)),
-            ("coexpr_q".into(), Column::F32(&zero)),
+            ("coexpr_lfdr".into(), Column::F32(&zero)),
             ("exposure_threshold".into(), Column::F32(&zero)),
             ("n_receivers".into(), Column::F32(&zero)),
             ("n_competent".into(), Column::F32(&zero)),
             ("n_exposed".into(), Column::F32(&zero)),
             ("effect_dr".into(), Column::F32(&effect)),
             ("effect_dr_p".into(), Column::F32(&p)),
-            ("effect_dr_q".into(), Column::F32(&q)),
+            ("effect_dr_lfdr".into(), Column::F32(&q)),
             ("effect_dr_pct".into(), Column::F32(&pct)),
             ("effect_dr_pct_lo".into(), Column::F32(&lo)),
             ("effect_dr_pct_hi".into(), Column::F32(&hi)),
             ("tau_top".into(), Column::F32(&zero)),
             ("tau_top_weight".into(), Column::F32(&zero)),
             ("effect_dr_contrast".into(), Column::F32(&zero)),
-            ("effect_dr_contrast_q".into(), Column::F32(&zero)),
+            ("effect_dr_contrast_lfdr".into(), Column::F32(&zero)),
             ("q_scope".into(), Column::Str(&all)),
         ],
     )
@@ -612,7 +612,7 @@ fn the_lra_reply_counts_verdicts_and_ranks_pairs() {
     assert_eq!(top[0]["receptor"], "RECE1");
     assert_eq!(top[0]["verdict"], "supported");
     assert_eq!(top[0]["change"], "+35% (95% CI +20% to +51%)");
-    assert_eq!(top[0]["q"], 3.21e-5);
+    assert_eq!(top[0]["lfdr"], 3.21e-5);
 }
 
 /// `rejects` in the order of [`COMPARED`].

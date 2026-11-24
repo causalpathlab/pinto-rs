@@ -1031,7 +1031,7 @@ enum LraSub {
                       ({out}.lra.shard-I-of-N.cbor, given in any order), check they are its\n\
                       N shards (the same settings and pairs, each shard once, every pair\n\
                       once), and write the tables a run without --shard writes: the\n\
-                      q-values and verdicts over every pair, recorded in the run's manifest\n\
+                      local fdrs and verdicts over every pair, recorded in the run's manifest\n\
                       (the --from run's, else {out}.pinto.json). Given effect tables\n\
                       instead, collects the marginal and --link-community tables into\n\
                       {out}.lra.by-link-community.parquet."

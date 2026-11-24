@@ -32,11 +32,14 @@
 //!   Every estimator's SE is its no-refit delete-one-tile jackknife
 //!   ([`jackknife::EstimatorJackknife`]).
 //!
-//! **Inference across pairs** ([`report::report`]): Benjamini–Hochberg q-values
-//! within the pooled rows and within each section, for the competent effect
-//! (two-sided), co-expression (one-sided, positive) and the control, and a
-//! per-ligand q (Simes over the ligand's pairs, BH over ligands); the verdict
-//! ([`verdict::Verdict`]) reads q at [`Internals::fdr`]. When the ligand marks
+//! **Inference across pairs** ([`report::report`]): Efron's local fdr
+//! ([`crate::util::local_fdr`]) within the pooled rows and within each section,
+//! under the empirical and the theoretical null, for the competent effect
+//! (two-sided), co-expression (one-sided, positive) and the controls; the verdict
+//! ([`verdict::Verdict`]) reads the empirical-null lfdr at
+//! [`Internals::local_fdr_level`] (a family under
+//! [`report::MIN_STATISTICS_FOR_LOCAL_FDR`] tests its p-values by Bonferroni at
+//! [`Internals::small_family_level`]). When the ligand marks
 //! a cell type, exposure is nearly "has a neighbour of that type" and cannot be
 //! told from neighbour identity: `exposure_eta2` measures how much of the
 //! exposure the dominant neighbour's identity bin explains, and at
@@ -156,8 +159,13 @@ pub struct Internals {
     /// Share of exposure variance explained by neighbour identity at which
     /// a pair is `celltype_inseparable`.
     pub max_exposure_eta2: f64,
-    /// The false discovery rate a test counts at in the verdicts.
-    pub fdr: f64,
+    /// The local fdr (under the empirical null) below which a statistic
+    /// counts in the verdicts, Efron's conventional 0.2. The tables carry
+    /// every lfdr; only the one-word verdict reads this.
+    pub local_fdr_level: f64,
+    /// The family-wise level p-values are tested at, Bonferroni over the
+    /// family, where a family is too small for a local fdr.
+    pub small_family_level: f64,
     /// Dimension of the receiver identity projection, and its bins (2^bits).
     pub identity_dim: usize,
     pub identity_bits: usize,
@@ -178,7 +186,8 @@ pub const INTERNALS: Internals = Internals {
     min_ess: 30.0,
     min_overlap: 0.01,
     max_exposure_eta2: 0.8,
-    fdr: 0.05,
+    local_fdr_level: 0.2,
+    small_family_level: 0.05,
     identity_dim: 10,
     identity_bits: 6,
     min_targets: 5,

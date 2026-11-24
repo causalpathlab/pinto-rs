@@ -1044,7 +1044,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
              shards (the same settings and pairs, each shard once, every pair once), and writes \
              the tables a run_lra without shard writes, {out}.lra.parquet and \
              {out}.lra.curve.parquet (and {out}.lra.celltype.parquet when the shards ran \
-             marginal_baselines), the q-values and verdicts over every pair, recorded in the \
+             marginal_baselines), the local fdrs and verdicts over every pair, recorded in the \
              run's manifest (else {out}.pinto.json). Runs as a background job unless asked; the \
              reply when done is run_lra's: the verdict counts, the pairs whose effect survived \
              the controls and the files. Called again with the same out once done, it reads the \

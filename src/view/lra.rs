@@ -124,7 +124,7 @@ impl Run {
 pub struct Table {
     pub r: TableRef,
     pub rows: Vec<PairRow>,
-    /// Which pairs its q-values were corrected over (its `q_scope`
+    /// Which pairs its local fdrs were fitted over (its `q_scope`
     /// column).
     pub q_scope: Box<str>,
     curves: Curves,
@@ -147,8 +147,8 @@ impl Table {
         })
     }
 
-    /// Whether its q-values were corrected within a `--only` subset.
-    pub fn subset_corrected(&self) -> bool {
+    /// Whether its local fdrs were fitted within a `--only` subset.
+    pub fn subset_fitted(&self) -> bool {
         self.r.subset.is_some() || &*self.q_scope != Q_SCOPE_ALL
     }
 
@@ -177,9 +177,9 @@ impl Table {
 /// How the pair list is ordered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Sort {
-    /// Headline q, smallest first (then p).
+    /// Headline local fdr, smallest first (then p).
     #[default]
-    Q,
+    Lfdr,
     /// Largest change first, either sign.
     Effect,
     /// By ligand, then receptor.
@@ -189,9 +189,9 @@ pub enum Sort {
 impl Sort {
     pub fn next(self) -> Sort {
         match self {
-            Sort::Q => Sort::Effect,
+            Sort::Lfdr => Sort::Effect,
             Sort::Effect => Sort::Name,
-            Sort::Name => Sort::Q,
+            Sort::Name => Sort::Lfdr,
         }
     }
 
@@ -246,8 +246,8 @@ pub fn visible(rows: &[PairRow], f: &Filter) -> Vec<usize> {
         .collect();
     let name = |a: usize, b: usize| rows[a].key.cmp(&rows[b].key);
     match f.sort {
-        Sort::Q => v.sort_by(|&a, &b| {
-            nan_last(rows[a].effect_dr_q, rows[b].effect_dr_q)
+        Sort::Lfdr => v.sort_by(|&a, &b| {
+            nan_last(rows[a].effect_dr_lfdr, rows[b].effect_dr_lfdr)
                 .then_with(|| nan_last(rows[a].effect_dr_p, rows[b].effect_dr_p))
                 .then_with(|| name(a, b))
         }),
@@ -277,18 +277,18 @@ pub fn change(row: &PairRow) -> String {
     }
 }
 
-/// A q-value in a few characters; one too small for the table's f32 reads
-/// as below the smallest it holds.
-pub fn q_text(q: f64) -> String {
-    if !q.is_finite() {
+/// A local fdr in a few characters; one too small for the table's f32
+/// reads as below the smallest it holds.
+pub fn lfdr_text(lfdr: f64) -> String {
+    if !lfdr.is_finite() {
         "—".into()
-    } else if q == 0.0 {
+    } else if lfdr == 0.0 {
         // Stored as f32, below whose smallest it reads as 0.
         "<1e-45".into()
-    } else if q < 1e-3 {
-        format!("{q:.0e}")
+    } else if lfdr < 1e-3 {
+        format!("{lfdr:.0e}")
     } else {
-        format!("{q:.3}")
+        format!("{lfdr:.3}")
     }
 }
 
@@ -794,7 +794,7 @@ impl LraView {
         let i = self.selected?;
         let row = &table.rows[i];
         let mut title = format!("{}:{}  threshold-response", row.ligand, row.receptor);
-        if table.subset_corrected() {
+        if table.subset_fitted() {
             title.push_str("  (subset)");
         }
         Some(Curve {

@@ -14,7 +14,7 @@ use crate::lr_activity::ligand_effect::fits::{indicator, Rows};
 use crate::lr_activity::ligand_effect::jackknife::{jackknife, scope_tiles, Jackknife, PairFit};
 use crate::lr_activity::ligand_effect::options::EffectOpts;
 use crate::lr_activity::ligand_effect::overlap::FoldStarts;
-use crate::lr_activity::ligand_effect::report::{report, ReportOpts};
+use crate::lr_activity::ligand_effect::report::{judge_alone, ReportOpts};
 use crate::lr_activity::ligand_effect::response::{expected_bleed, Response};
 use crate::lr_activity::ligand_effect::rows::EffectRow;
 use crate::lr_activity::ligand_effect::thresholds::{
@@ -598,8 +598,8 @@ fn effect_truths(
     (truth, sample_effect(y1, y0, &among))
 }
 
-/// The verdict `lra` would give this run alone, on scope `scope` (its
-/// co-expression is the pooled one's).
+/// The verdict `lra` would give this run tested alone ([`judge_alone`]),
+/// on scope `scope` (its co-expression is the pooled one's).
 fn run_verdict(
     rows: Rows<'_>,
     seen: &SeenByEstimator,
@@ -617,7 +617,7 @@ fn run_verdict(
             &rows.scope_rows[scope],
         ),
     );
-    report(std::slice::from_mut(&mut judged), &ReportOpts::default());
+    judge_alone(&mut judged, &ReportOpts::default());
     judged.verdict
 }
 

@@ -37,7 +37,7 @@ pub struct LraFiles {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<LraOptions>,
     /// Tables of a subset of the pairs (`pinto lra --only`), kept apart
-    /// from [`LraFiles::table`]: their q-values are corrected within the
+    /// from [`LraFiles::table`]: their local fdrs are fitted within the
     /// subset only. One per list of pairs, the newest run of it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub subsets: Vec<LraSubset>,

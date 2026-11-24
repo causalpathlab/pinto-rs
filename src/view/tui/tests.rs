@@ -101,10 +101,11 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     let flat = all.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(flat.contains(WARNING), "{all}");
     assert!(flat.contains("weighs τ 2 most (80%)"), "{all}");
-    // The effect against the control, signed: a small q can mean it
+    // The effect against the control, signed: a small lfdr can mean it
     // falls short of it, as here of the receptor-negative receivers.
     assert!(
-        flat.contains("effect − control: receptor− -4.9% q 0.010") && !flat.contains("background"),
+        flat.contains("effect − control: receptor− -4.9% lfdr 0.010")
+            && !flat.contains("background"),
         "{all}"
     );
     let (level, style) = app.drawn();
@@ -149,13 +150,13 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     assert!(app.lra.as_ref().unwrap().marked.contains("L1:G0"));
     assert!(text(&app).join("\n").contains("*L1:G0"));
 
-    // T: the subset table, subset-corrected.
+    // T: the subset table, its lfdr fitted within the subset.
     app.lra_key(key(KeyCode::Char('/')), None).unwrap();
     app.lra_key(key(KeyCode::Esc), None).unwrap();
     app.lra_key(key(KeyCode::Char('T')), None).unwrap();
     let all = text(&app).join("\n");
     assert!(all.contains("only L1:R1"), "{all}");
-    assert!(all.contains("subset-corrected"), "{all}");
+    assert!(all.contains("subset-fitted"), "{all}");
     // The export's redraw command names the pair and its table.
     app.lra.as_mut().unwrap().select("L1:R1").unwrap();
     app.draw_pair(None);
