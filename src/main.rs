@@ -1032,9 +1032,22 @@ enum LraSub {
                       N shards (the same settings and pairs, each shard once, every pair\n\
                       once), and write the tables a run without --shard writes: the\n\
                       q-values and verdicts over every pair, recorded in the run's manifest\n\
-                      (the --from run's, else {out}.pinto.json)."
+                      (the --from run's, else {out}.pinto.json). Given effect tables\n\
+                      instead, collects the marginal and --link-community tables into\n\
+                      {out}.lra.by-link-community.parquet."
     )]
     Merge(Box<lr_activity::args::LraMergeArgs>),
+    #[command(
+        name = "link-communities",
+        about = "List the link communities `pinto lra --link-community` can run on",
+        long_about = "List the --from run's link communities over its spatial contacts, one per\n\
+                      line: the community, its links, its receivers (cells with a link in\n\
+                      it; an upper bound, as a cell missing from the data or without\n\
+                      coordinates is dropped when the community is fitted) and whether\n\
+                      --min-receivers lets `pinto lra --link-community` fit it. In community order, so line I of the body can be task I of\n\
+                      a job array."
+    )]
+    LinkCommunities(Box<lr_activity::args::LraLinkCommunitiesArgs>),
 }
 
 /// `pinto sim <op>`: simulation with a planted truth, and scoring against it.
@@ -1198,6 +1211,7 @@ impl Commands {
             Commands::Lra(a) => match &mut a.simulate {
                 Some(LraSub::Simulate(s)) => (s.out.as_mut()?, "lra"),
                 Some(LraSub::Merge(m)) => (&mut m.out, "lra"),
+                Some(LraSub::LinkCommunities(_)) => return None,
                 None => (a.args.out.as_mut()?, "lra"),
             },
             _ => return None,
@@ -1453,7 +1467,15 @@ fn run_command() -> anyhow::Result<()> {
         Commands::Lra(lra) => match &lra.simulate {
             Some(LraSub::Simulate(args)) => fit_lra_simulate(args)?,
             Some(LraSub::Merge(args)) => {
-                lr_activity::ligand_effect::pipeline::merge(&args.shards, &args.out)?
+                use lr_activity::ligand_effect::output::collect;
+                if collect::are_tables(&args.shards) {
+                    collect::collect_link_community_tables(&args.shards, &args.out)?;
+                } else {
+                    lr_activity::ligand_effect::pipeline::merge(&args.shards, &args.out)?
+                }
+            }
+            Some(LraSub::LinkCommunities(args)) => {
+                lr_activity::ligand_effect::link_community_scope::list_link_communities(args)?
             }
             None => fit_srt_lr_activity(&lra.args)?,
         },

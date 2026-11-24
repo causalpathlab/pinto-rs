@@ -43,7 +43,7 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("apply predict", 23),
         ("apply impute", 21),
         ("apply propensity", 11),
-        ("lra", 23),
+        ("lra", 24),
         ("lra simulate", 25),
         ("sim new", 10),
         ("sim score-by-set", 8),

@@ -139,6 +139,10 @@ pub struct Contacts {
     pub cell_type: Option<Labels>,
     /// Regions of `--region`, coded the same way.
     pub region: Option<Labels>,
+    /// Each contact's row in the `--from` run's `coord_pairs` table, which is
+    /// its row in `link_community` too; `None` for contacts built from the
+    /// coordinates given.
+    pub coord_pairs_row_of_pair: Option<Vec<usize>>,
 }
 
 /// A label per data column, as a code into the names; `unassigned`, the
@@ -245,6 +249,7 @@ fn read_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
         coords,
         cell_type: None,
         region: None,
+        coord_pairs_row_of_pair: None,
     })
 }
 
@@ -259,7 +264,11 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         .map(|(i, n)| (n, i))
         .collect();
     let coord_pairs = input.run_file("coord_pairs.parquet", "the run's cell pairs")?;
-    let (pairs, cell_batch) = read_spatial_contacts(&coord_pairs, &cell_to_col, n_cells)?;
+    let SpatialContacts {
+        pairs,
+        cell_batch,
+        coord_pairs_row_of_pair,
+    } = read_spatial_contacts(&coord_pairs, &cell_to_col, n_cells)?;
     // Each cell's own batch, whether or not it has a contact inside it.
     let cell_section = cell_batch
         .into_iter()
@@ -299,6 +308,7 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         coords,
         cell_type,
         region: None,
+        coord_pairs_row_of_pair: Some(coord_pairs_row_of_pair),
     })
 }
 
@@ -462,19 +472,35 @@ fn code_labels(label: Vec<Option<Box<str>>>) -> anyhow::Result<Labels> {
 /// Each data column's own batch, when known.
 pub type CellBatches = Vec<Option<Box<str>>>;
 
+/// What [`read_spatial_contacts`] reads.
+pub struct SpatialContacts {
+    /// The contacts, as pairs of data columns.
+    pub pairs: Vec<(usize, usize)>,
+    /// Each data column's own batch, when known.
+    pub cell_batch: CellBatches,
+    /// Each contact's row in the coord_pairs table (its row in link_community).
+    pub coord_pairs_row_of_pair: Vec<usize>,
+}
+
 /// The physically adjacent pairs of `{prefix}.coord_pairs.parquet` (every
 /// pair, unless an `edge_kind` column marks expression pairs) as data
 /// columns, and each data column's own batch, read from the ends of every
-/// pair it is in (`None` without batch columns or pairs).
+/// pair it is in (`None` without batch columns or pairs), and each kept
+/// pair's row in the table (the row its link community is on).
 pub fn read_spatial_contacts(
     path: &Path,
     cell_to_col: &HashMap<Box<str>, usize>,
     n_cells: usize,
-) -> anyhow::Result<(Vec<(usize, usize)>, CellBatches)> {
+) -> anyhow::Result<SpatialContacts> {
     let records = crate::lr_activity::io::read_pair_table(&path.to_string_lossy(), false)?;
     let (mut out, mut unresolved) = (Vec::new(), 0usize);
+    let mut table_row_of_pair = Vec::new();
     let mut batch: Vec<Option<Box<str>>> = vec![None; n_cells];
-    for e in records.into_iter().filter(|e| e.is_spatial) {
+    for (table_row, e) in records
+        .into_iter()
+        .enumerate()
+        .filter(|(_, e)| e.is_spatial)
+    {
         let (Some(&i), Some(&j)) = (
             cell_to_col.get(&e.left_cell),
             cell_to_col.get(&e.right_cell),
@@ -487,6 +513,7 @@ pub fn read_spatial_contacts(
             batch[j].get_or_insert(r);
         }
         out.push((i, j));
+        table_row_of_pair.push(table_row);
     }
     if unresolved > 0 {
         info!("Dropped {unresolved} cell pairs whose cells are not in the expression data");
@@ -496,7 +523,11 @@ pub fn read_spatial_contacts(
         "no spatial contact of {} names two cells of the data",
         path.display()
     );
-    Ok((out, batch))
+    Ok(SpatialContacts {
+        pairs: out,
+        cell_batch: batch,
+        coord_pairs_row_of_pair: table_row_of_pair,
+    })
 }
 
 /// The manifest lra records into: the `--from` run's, else
@@ -531,4 +562,43 @@ pub fn record_manifest(
     }
     .write_if_missing(&path)?;
     Ok(path)
+}
+
+/// Each contact's link community (`--link-community`), from the `--from`
+/// run's link_community table, read once. It lists the run's cell pairs row
+/// for row with coord_pairs, which is checked on every contact used: its
+/// row there names the contact's own two cells.
+pub fn link_community_of_contacts(
+    input: &LraInput,
+    contacts: &Contacts,
+) -> anyhow::Result<Vec<i64>> {
+    use crate::util::parquet_io::{ints, labels, read_named_columns};
+    let rows = contacts
+        .coord_pairs_row_of_pair
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--link-community needs the cell pairs of a --from run"))?;
+    let run = input
+        .run
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--link-community needs --from"))?;
+    let path = run.required_recorded_output(
+        run.meta.outputs.link_community.as_deref(),
+        "link_community.parquet",
+    )?;
+    let columns = read_named_columns(&path, &["left_cell", "right_cell", "community"])?;
+    let (left_cell, right_cell) = (labels(&columns[0])?, labels(&columns[1])?);
+    let community_of_row = ints(&columns[2])?;
+    let cell_names = contacts.data.column_names()?;
+    for (&row, &(i, j)) in rows.iter().zip(&contacts.pairs) {
+        anyhow::ensure!(
+            row < community_of_row.len()
+                && left_cell[row] == cell_names[i]
+                && right_cell[row] == cell_names[j],
+            "{}: row {row} is not the run's cell pair {} – {} (that row of its coord_pairs)",
+            path.display(),
+            cell_names[i],
+            cell_names[j]
+        );
+    }
+    Ok(rows.iter().map(|&row| community_of_row[row]).collect())
 }

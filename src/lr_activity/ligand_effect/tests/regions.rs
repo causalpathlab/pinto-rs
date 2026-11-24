@@ -70,6 +70,7 @@ fn region_tissue() -> Tissue {
             log1p_depth: &depth,
             cell_type: None,
             region: Some((&codes, &names)),
+            link_community: None,
         },
         &TissueOpts {
             folds: 4,

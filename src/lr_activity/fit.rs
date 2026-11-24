@@ -133,6 +133,11 @@ pub(crate) fn check_method_flags(args: &SrtLrActivityArgs) -> anyhow::Result<()>
         "--marginal-baselines applies to --method contact-effect; the co-expression \
          methods are marginal statistics themselves"
     );
+    anyhow::ensure!(
+        args.link_community.is_none(),
+        "--link-community applies to --method contact-effect; the co-expression methods \
+         already report each link community"
+    );
     Ok(())
 }
 
@@ -650,6 +655,10 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
     use crate::lr_activity::ligand_effect::{RunInputs, Settings};
     let memory_budget = crate::util::memory::budget_var()?;
     let contacts = load_contacts(input)?;
+    let link_community_of_pair = args
+        .link_community
+        .map(|_| crate::lr_activity::input::link_community_of_contacts(input, &contacts))
+        .transpose()?;
     let manifest = record_manifest(input, out, &contacts)?;
     run(&RunInputs {
         settings: Settings {
@@ -662,6 +671,8 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
             seed: args.input.seed,
             only: &args.only,
             shard: args.shard,
+            link_community: args.link_community,
+            min_receivers: args.min_receivers,
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),
             plant_region: None,
@@ -687,6 +698,7 @@ fn contact_effect(args: &SrtLrActivityArgs, input: &LraInput, out: &str) -> anyh
             .region
             .as_ref()
             .map(|(c, n)| (c.as_slice(), n.as_slice())),
+        link_community_of_pair: link_community_of_pair.as_deref(),
     })
 }
 
@@ -766,6 +778,8 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             seed: args.input.seed,
             only: &[],
             shard: None,
+            link_community: None,
+            min_receivers: crate::lr_activity::ligand_effect::link_community_scope::MIN_RECEIVERS,
             cell_types: input.cell_types.as_deref(),
             region: input.region.as_deref(),
             plant_region: args.plant_region.as_deref(),
@@ -789,6 +803,7 @@ pub fn fit_lra_simulate(args: &LraSimulateArgs) -> anyhow::Result<()> {
             .region
             .as_ref()
             .map(|(c, n)| (c.as_slice(), n.as_slice())),
+        link_community_of_pair: None,
     };
     match &single {
         Some(one) => run_simulate_one(&inputs, one, args.shard),

@@ -8,7 +8,7 @@
 //! pair's estimate depends only on the tissue and its own seed, so a pair
 //! comes out of its shard as it would of the whole run. A shard writes
 //! no table and records nothing in the manifest: it writes
-//! `{out}.lra.shard-I-of-N.cbor` ([`path`]), its pairs' rows before the
+//! `{out}.lra.shard-I-of-N.cbor` ([`super::link_community_scope::shard_path`]), its pairs' rows before the
 //! q-values and verdicts.
 //!
 //! `pinto lra merge` reads every shard of a run, checks they are its `N`
@@ -54,11 +54,6 @@ impl std::fmt::Display for Shard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.index, self.count)
     }
-}
-
-/// `{out}.lra.shard-I-of-N.cbor`.
-pub fn path(out: &str, shard: Shard) -> String {
-    format!("{out}.lra.shard-{}-of-{}.cbor", shard.index, shard.count)
 }
 
 /// `{out}.lra-simulate.shard-I-of-N.cbor`.
@@ -330,8 +325,12 @@ pub fn write(path: &str, file: &Contents) -> anyhow::Result<()> {
 /// What a shard file is of, as a merge of it writes.
 #[cfg(feature = "view")]
 pub enum Kind {
-    /// `pinto lra`, with the cell-type rows (`--marginal-baselines`) or not.
-    Lra { celltype: bool },
+    /// `pinto lra`, with the cell-type rows (`--marginal-baselines`) or not,
+    /// of the marginal run or of a `--link-community`.
+    Lra {
+        celltype: bool,
+        link_community: Option<i64>,
+    },
     /// `pinto lra simulate`, one scenario (`--one`) or the built-in grid.
     Simulate { one: bool },
 }
@@ -344,6 +343,7 @@ pub fn peek(path: &str) -> anyhow::Result<(String, Kind)> {
             f.header.run_key,
             Kind::Lra {
                 celltype: f.celltype_source.is_some(),
+                link_community: f.record.options.link_community,
             },
         ),
         Contents::Simulate(f) => (

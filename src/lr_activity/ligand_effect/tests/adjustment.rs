@@ -96,6 +96,7 @@ fn world_confounded_by(kind: Confounder, seed: u64) -> World {
             log1p_depth: &log1p_depth,
             cell_type: Some(&ty),
             region: None,
+            link_community: None,
         },
         &TissueOpts {
             folds: 4,
@@ -279,6 +280,7 @@ fn opposite_fields_world(seed: u64) -> World {
             log1p_depth: &log1p_depth,
             cell_type: None,
             region: None,
+            link_community: None,
         },
         &TissueOpts {
             folds: 4,

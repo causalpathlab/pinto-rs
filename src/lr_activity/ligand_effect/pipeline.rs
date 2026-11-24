@@ -144,6 +144,7 @@ fn build_tissue(
     log1p_depth: &[f32],
 ) -> anyhow::Result<Tissue> {
     let k = INTERNALS;
+    let community_pairs = super::link_community_scope::community_pairs_of_run(inp)?;
     let topts = TissueOpts {
         scales: k.scales.to_vec(),
         tile: k.tile,
@@ -161,6 +162,7 @@ fn build_tissue(
             log1p_depth,
             cell_type: inp.cell_type.map(|(codes, _)| codes),
             region: inp.region,
+            link_community: community_pairs.as_ref(),
         },
         &topts,
     )?
@@ -519,7 +521,7 @@ fn record_tables(
     let options = record.options.clone();
     let (table, curve) = (recorded(path), recorded(curve_path));
     let celltype = celltype.map(recorded);
-    if only.is_empty() {
+    if only.is_empty() && options.link_community.is_none() {
         let reference = record
             .reference_record
             .as_deref()
@@ -558,17 +560,10 @@ fn write_tables(
     rows: &[rows::EffectRow],
     celltype: Option<&[output::CelltypeRow]>,
 ) -> anyhow::Result<(String, String)> {
-    let made = crate::lr_activity::lra_outputs(
-        crate::lr_activity::args::LraMethod::ContactEffect,
-        out,
-        only,
-    );
-    let [path, curve_path] = [&made[0], &made[1]].map(|p| p.to_string_lossy().into_owned());
-    let q_scope = if only.is_empty() {
-        output::Q_SCOPE_ALL.into()
-    } else {
-        only::q_scope(n_pairs, record.n_all)
-    };
+    let link_community = record.options.link_community;
+    let (path, curve_path) =
+        super::link_community_scope::table_and_curve_paths(out, only, link_community);
+    let q_scope = super::link_community_scope::q_scope(only, n_pairs, record.n_all, link_community);
     output::write_effects(&path, rows, &q_scope, celltype.is_some())?;
     output::write_curve(&curve_path, rows)?;
     let celltype_path = output::celltype_beside(&path);
@@ -638,7 +633,7 @@ fn write_shard(
         pairs,
         celltype_source: marginal.map(|m| m.labels.source),
     }));
-    let path = shard::path(a.out, s);
+    let path = super::link_community_scope::shard_path(a.out, s, a.link_community);
     shard::write(&path, &file)?;
     crate::util::staging::say(format!(
         "Shard {s}: {} pairs to {}; `pinto lra merge` puts the {} shards together",
@@ -737,7 +732,9 @@ pub fn merge(shards: &[String], out: &str) -> anyhow::Result<()> {
         "run_key": run_key,
         "shards": count,
     }))?;
-    super::reference::write_atomic(Path::new(&output::merge_record_path(out)), text.as_bytes())?;
+    let merge_record =
+        super::link_community_scope::merge_record_path(out, record.options.link_community);
+    super::reference::write_atomic(Path::new(&merge_record), text.as_bytes())?;
     Ok(())
 }
 

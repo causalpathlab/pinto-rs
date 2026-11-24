@@ -985,6 +985,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "species": lra("species", json!({"enum": choices::<ReferenceSpecies>()})),
                     "only": long_flag_arg(lra_cmd, "only", json!({"type": "array", "items": {"type": "string"}})),
                     "shard": long_flag_arg(lra_cmd, "shard", json!({"type": "string", "pattern": "^[0-9]+/[0-9]+$"})),
+                    "link_community": long_flag_arg(lra_cmd, "link_community", json!({"type": "integer"})),
                     "n_permutations": lra("n_permutations", json!({"type": "integer", "minimum": 1})),
                     "min_gene_count": lra("min_gene_count", json!({"type": "number"})),
                     "marginal_baselines": lra("marginal_baselines", json!({"type": "boolean"})),

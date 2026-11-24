@@ -239,6 +239,41 @@ pub struct SrtLrActivityArgs {
 
     #[arg(
         long,
+        value_name = "K",
+        requires = "from",
+        conflicts_with = "marginal_baselines",
+        help = "Estimate through the contacts of one link community of the --from run",
+        long_help = "Estimate through the contacts of link community K of the --from run\n\
+                     (its link_community.parquet; `pinto lra link-communities` lists them).\n\
+                     A receiver's exposure counts only the neighbours it reaches through\n\
+                     community-K links, and only the receivers with at least one such\n\
+                     link are fitted and reported: a cell without one is out of scope,\n\
+                     never an unexposed control. Confounders, spillover and competence\n\
+                     keep the full contact graph. The table goes to\n\
+                     {out}.lra.link-community-K.parquet (curve and cell-type tables\n\
+                     beside it), recorded apart in the manifest (outputs.lra.subsets),\n\
+                     its q-values corrected within the community. One job per community\n\
+                     (a job array); `pinto lra merge` collects them with the marginal\n\
+                     table."
+    )]
+    pub link_community: Option<i64>,
+
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = crate::lr_activity::ligand_effect::link_community_scope::MIN_RECEIVERS,
+        requires = "link_community",
+        hide = true,
+        help = "Fewest receivers of the link community to fit it (with --link-community)",
+        long_help = "Fewest receivers of the link community (cells with at least one link\n\
+                     in it) for --link-community to fit it; a smaller community is\n\
+                     refused with a message. Each receiver is a row of the fits, which\n\
+                     need exposed and unexposed receivers both."
+    )]
+    pub min_receivers: usize,
+
+    #[arg(
+        long,
         value_delimiter(','),
         value_hint = ValueHint::FilePath,
         help = "Response programs (TSV or GMT), added to the reference",
@@ -550,7 +585,14 @@ pub struct LraMergeArgs {
     #[arg(
         required = true,
         value_hint = ValueHint::FilePath,
-        help = "Every shard file of one run ({out}.lra.shard-I-of-N.cbor), in any order"
+        help = "Every shard file of one run, or the effect tables to collect",
+        long_help = "Every shard file of one run ({out}.lra[.link-community-K].shard-I-of-N.cbor),\n\
+                     in any order: their tables are written as a run without --shard\n\
+                     writes them. Or effect tables (.parquet): the marginal table\n\
+                     ({prefix}.lra.parquet) and the --link-community tables\n\
+                     ({prefix}.lra.link-community-K.parquet), collected into\n\
+                     {out}.lra.by-link-community.parquet with a link_community column\n\
+                     (`all` for the marginal rows); each keeps its own q-values."
     )]
     pub shards: Vec<String>,
 
@@ -561,4 +603,25 @@ pub struct LraMergeArgs {
                 and the rest"
     )]
     pub out: Box<str>,
+}
+
+/// `pinto lra link-communities`.
+#[derive(clap::Args, Debug)]
+pub struct LraLinkCommunitiesArgs {
+    #[arg(
+        long,
+        short = 'f',
+        value_name = "PINTO_JSON",
+        value_hint = ValueHint::FilePath,
+        help = "A prior pinto run's .pinto.json with link communities (lc, cage, dsvd)"
+    )]
+    pub from: Box<str>,
+
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = crate::lr_activity::ligand_effect::link_community_scope::MIN_RECEIVERS,
+        help = "Fewest receivers for --link-community to fit a community (the `fitted` column)"
+    )]
+    pub min_receivers: usize,
 }

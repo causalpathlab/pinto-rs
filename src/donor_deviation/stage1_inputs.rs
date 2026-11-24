@@ -39,16 +39,12 @@ fn latent_file(run: &Run) -> anyhow::Result<String> {
     Ok(path)
 }
 
-/// An output the stage-1 run's manifest records (`Run::recorded_output`).
+/// An output the stage-1 run's manifest records, as a path string.
 fn recorded_run_file(run: &Run, recorded: Option<&str>, suffix: &str) -> anyhow::Result<String> {
-    run.recorded_output(recorded, suffix)?
-        .map(|path| path.to_string_lossy().into_owned())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}: the stage-1 run records no {suffix}",
-                run.manifest.display()
-            )
-        })
+    Ok(run
+        .required_recorded_output(recorded, suffix)?
+        .to_string_lossy()
+        .into_owned())
 }
 
 /// Read the stage-1 run's cell pairs, their sections, communities and

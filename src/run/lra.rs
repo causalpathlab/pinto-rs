@@ -113,6 +113,10 @@ lra_tool_args!(LraToolArgs {
     /// `--shard`: shard `I` (0-based) of `N` of the pairs, `I/N`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shard: Option<String>,
+    /// `--link-community`: estimate through the contacts of this link
+    /// community of the run (`pinto lra link-communities` lists them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_community: Option<i64>,
 } {
     /// `--marginal-baselines`, and `--marginal-permutations`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -139,10 +143,16 @@ impl LraToolArgs {
     /// file alone; else [`lra_outputs`], and with `marginal_baselines` the
     /// per-type-pair table beside the contact-effect table.
     fn outputs(&self, method: LraMethod, out: &str) -> Vec<PathBuf> {
+        use crate::lr_activity::ligand_effect::link_community_scope;
         if let Ok(Some(s)) = self.shard() {
-            return vec![shard::path(out, s).into()];
+            return vec![link_community_scope::shard_path(out, s, self.link_community).into()];
         }
-        let mut made = lra_outputs(method, out, &self.only());
+        let mut made = crate::lr_activity::lra_outputs_of_link_community(
+            method,
+            out,
+            &self.only(),
+            self.link_community,
+        );
         if self.marginal_baselines && method == LraMethod::ContactEffect {
             let table = made[0].to_string_lossy().into_owned();
             made.push(output::celltype_beside(&table).into());
@@ -181,6 +191,7 @@ impl LraToolArgs {
             region: self.region.as_ref().map(shown),
             region_jackknife: self.region_jackknife.clone().unwrap_or(d.region_jackknife),
             abf_prior_scale: self.abf_prior_scale.unwrap_or(d.abf_prior_scale),
+            link_community: self.link_community,
             marginal_permutations: self.marginal_baselines.then(|| {
                 self.marginal_permutations
                     .unwrap_or(crate::lr_activity::ligand_effect::PERMUTATIONS)
@@ -456,8 +467,6 @@ pub(super) fn lra_method(method: Option<&str>) -> anyhow::Result<LraMethod> {
     }
 }
 
-pub(super) use crate::lr_activity::lra_outputs;
-
 /// `out` as `run_fit` names it: a folder or another header
 /// ([`script::is_header`]) gets the output named `lra` under it.
 fn named_out(out: Option<&str>) -> Option<String> {
@@ -501,6 +510,9 @@ pub(super) fn lra_argv(
     let mut argv = options.argv(run, Some(out), method, &a.only);
     if let Some(s) = &a.shard {
         argv.push(flag_value("--shard", s));
+    }
+    if let Some(k) = a.link_community {
+        argv.push(flag_value("--link-community", k));
     }
     argv.extend(a.input().flags());
     if let Some(n) = a.n_permutations {
@@ -735,13 +747,13 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
         checked_lra(cli, &argv)?;
         if let Some(s) = shard {
             if finished(cx, &made) {
-                let mut reply = shard_reply(s, &argv, &o, &made);
+                let mut reply = shard_reply(s, &argv, &o, &made, a.link_community);
                 push_note(
                     &mut reply,
                     &format!(
                         "read back: the shard file is already there, not checked against \
                          these arguments; nothing was run. {}",
-                        shard_note(s, &o)
+                        shard_note(s, &o, a.link_community)
                     ),
                 );
                 return Ok(reply);
@@ -775,36 +787,37 @@ pub(super) fn lra(cli: &clap::Command, a: LraToolArgs, cx: &Call) -> anyhow::Res
             job["note"] = format!(
                 "job_wait (id {}) or job_status until it ends. {}",
                 job["job"].as_str().unwrap_or_default(),
-                shard_note(s, &out)
+                shard_note(s, &out, a.link_community)
             )
             .into();
         }
         return Ok(vec![Content::Json(job)]);
     }
     if let Some(s) = shard {
-        return Ok(shard_reply(s, &argv, &out, &made));
+        return Ok(shard_reply(s, &argv, &out, &made, a.link_community));
     }
     lra_reply(&a, method, Some(&argv), run, &made)
 }
 
 /// The `run_lra_merge` call putting together the `N` shards of `shard`'s
 /// run, each written under `out`.
-fn merge_args(shard: Shard, out: &str) -> Value {
+fn merge_args(shard: Shard, out: &str, link_community: Option<i64>) -> Value {
+    use crate::lr_activity::ligand_effect::link_community_scope::shard_path;
     let shards: Vec<String> = (0..shard.count)
-        .map(|index| shard::path(out, Shard { index, ..shard }))
+        .map(|index| shard_path(out, Shard { index, ..shard }, link_community))
         .collect();
     json!({ "shards": shards, "out": out })
 }
 
 /// What follows a shard: the other shards, each its own job, then
 /// `run_lra_merge`.
-fn shard_note(shard: Shard, out: &str) -> String {
+fn shard_note(shard: Shard, out: &str, link_community: Option<i64>) -> String {
     format!(
         "A shard writes no table and records nothing in the manifest. Run every shard \
          I/{n} (I from 0 to {last}) with the same arguments, each as its own job (a Slurm \
          array task, I = $SLURM_ARRAY_TASK_ID); once all {n} are done, run_lra_merge {} \
          writes the tables of the whole run, its q-values over every pair.",
-        merge_args(shard, out),
+        merge_args(shard, out, link_community),
         n = shard.count,
         last = shard.count - 1,
     )
@@ -812,19 +825,25 @@ fn shard_note(shard: Shard, out: &str) -> String {
 
 /// The reply to a finished `pinto lra --shard`: the shard file it wrote and
 /// the `run_lra_merge` call that puts the shards together.
-fn shard_reply(shard: Shard, argv: &[String], out: &str, made: &[PathBuf]) -> Vec<Content> {
+fn shard_reply(
+    shard: Shard,
+    argv: &[String],
+    out: &str,
+    made: &[PathBuf],
+    link_community: Option<i64>,
+) -> Vec<Content> {
     let written: Vec<String> = made.iter().map(|p| shown_path(p)).collect();
     let reply = json!({
         "shard": shard.to_string(),
         "command": script::pinto_line(argv),
         "written": written,
-        "note": shard_note(shard, out),
+        "note": shard_note(shard, out, link_community),
     });
     vec![
         Content::Json(reply),
         Content::Next(vec![Next::new(
             "run_lra_merge",
-            merge_args(shard, out),
+            merge_args(shard, out, link_community),
             "once every shard is done: the tables of the whole run",
         )]),
     ]
@@ -968,13 +987,33 @@ pub(super) fn lra_merge(
         .filter(|o| !o.is_empty())
         .ok_or_else(|| anyhow::anyhow!("give out, the prefix of the merged tables"))?;
     let out = shown_path(Path::new(&out));
+    // effect tables are collected, not merged: quick, so not a job
+    if crate::lr_activity::ligand_effect::output::collect::are_tables(&a.shards) {
+        let written =
+            crate::lr_activity::ligand_effect::output::collect::collect_link_community_tables(
+                &a.shards, &out,
+            )?;
+        return Ok(vec![Content::Json(json!({
+            "collected": a.shards,
+            "written": [shown_path(Path::new(&written))],
+        }))]);
+    }
     let (run_key, kind) = shard::peek(&a.shards[0])?;
     let simulate = matches!(kind, shard::Kind::Simulate { .. });
     // what a merge of this kind writes: the per-type-pair table too when the
     // shards carry it, a single scenario's sidecar
     let outputs = |o: &str| match kind {
-        shard::Kind::Lra { celltype } => {
-            let mut made = lra_outputs(LraMethod::ContactEffect, o, &[]);
+        shard::Kind::Lra {
+            celltype,
+            link_community,
+        } => {
+            let (table, curve) =
+                crate::lr_activity::ligand_effect::link_community_scope::table_and_curve_paths(
+                    o,
+                    &[],
+                    link_community,
+                );
+            let mut made = vec![PathBuf::from(table), PathBuf::from(curve)];
             if celltype {
                 let table = made[0].to_string_lossy().into_owned();
                 made.push(output::celltype_beside(&table).into());
@@ -994,7 +1033,14 @@ pub(super) fn lra_merge(
     checked(cli, &argv)?;
     // Finished tables are read, not merged again, when these shards made them.
     if finished(cx, &made) {
-        let record = output::merge_record_path(&out);
+        let link_community = match kind {
+            shard::Kind::Lra { link_community, .. } => link_community,
+            shard::Kind::Simulate { .. } => None,
+        };
+        let record = crate::lr_activity::ligand_effect::link_community_scope::merge_record_path(
+            &out,
+            link_community,
+        );
         let made_by = std::fs::read_to_string(&record)
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())

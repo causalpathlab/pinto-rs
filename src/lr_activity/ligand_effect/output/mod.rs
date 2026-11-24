@@ -1,6 +1,7 @@
 //! Parquet tables, written and read back, the run summary and the
 //! benchmark summary.
 
+pub mod collect;
 mod columns;
 mod compare;
 mod paths;

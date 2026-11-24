@@ -124,7 +124,11 @@ fn a_cell_without_a_within_batch_contact_keeps_its_batch() -> anyhow::Result<()>
         .enumerate()
         .map(|(i, c)| ((*c).into(), i))
         .collect();
-    let (pairs, batch) = crate::lr_activity::input::read_spatial_contacts(&path, &cols, 4)?;
+    let crate::lr_activity::input::SpatialContacts {
+        pairs,
+        cell_batch: batch,
+        ..
+    } = crate::lr_activity::input::read_spatial_contacts(&path, &cols, 4)?;
     assert_eq!(pairs, [(0, 1), (1, 2)]);
     assert_eq!(batch[2].as_deref(), Some("B"), "{batch:?}");
     assert_eq!(batch[1].as_deref(), Some("A"));
