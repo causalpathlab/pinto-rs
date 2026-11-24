@@ -51,7 +51,7 @@ use crate::util::ablation::{dense_ids, group};
 use crate::util::common::{jackknife_se, log_normalize, Mat};
 use crate::util::feature_axis::FeatureAxis;
 use crate::util::graph_coarsen::fold_edges_to_super;
-use crate::util::local_fdr::{two_groups, NormalNull, SignalSide};
+use crate::util::local_fdr::{two_groups, NormalNull};
 use data_beans::sparse_io_vector::SparseIoVec;
 use log::info;
 use rayon::prelude::*;
@@ -448,7 +448,7 @@ pub fn two_group_inclusion(t: &[f64]) -> (Vec<f32>, f64) {
     let Some(null) = NormalNull::empirical(t) else {
         return (vec![1.0; t.len()], 0.0);
     };
-    let fit = two_groups(t, null, SignalSide::Above);
+    let fit = two_groups(t, null);
     let pi = fit.lfdr.iter().map(|&l| (1.0 - l) as f32).collect();
     (pi, fit.null_share)
 }

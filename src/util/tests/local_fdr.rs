@@ -1,8 +1,8 @@
 //! The two-group model: the empirical null recovered from the bulk, the
-//! local fdr monotone away from it, one side or both, and what a
-//! non-finite statistic gets.
+//! local fdr monotone above it, null below it, and what a non-finite
+//! statistic gets.
 
-use crate::util::local_fdr::{two_groups, NormalNull, SignalSide};
+use crate::util::local_fdr::{two_groups, NormalNull};
 
 /// `n` statistics at the quantiles of `N(mean, sd²)`, deterministic.
 fn normal_quantiles(n: usize, mean: f64, sd: f64) -> Vec<f64> {
@@ -30,47 +30,36 @@ fn the_empirical_null_is_the_bulk() {
 }
 
 #[test]
-fn the_local_fdr_falls_away_from_the_null_on_either_side() {
-    let mut z = normal_quantiles(900, 0.0, 1.0);
+fn the_local_fdr_falls_away_from_the_null_above_it() {
+    let mut z = normal_quantiles(950, 0.0, 1.0);
     z.extend(normal_quantiles(50, 4.0, 0.5));
-    z.extend(normal_quantiles(50, -4.0, 0.5));
-    let fit = two_groups(&z, NormalNull::THEORETICAL, SignalSide::Both);
+    let fit = two_groups(&z, NormalNull::THEORETICAL);
     assert!(
         fit.null_share > 0.8 && fit.null_share <= 1.0,
         "{}",
         fit.null_share
     );
-    let mut order: Vec<usize> = (0..z.len()).collect();
-    order.sort_by(|&a, &b| z[a].abs().total_cmp(&z[b].abs()));
-    for side in [1.0, -1.0] {
-        let on: Vec<usize> = order
-            .iter()
-            .copied()
-            .filter(|&i| z[i] * side > 0.0)
-            .collect();
-        assert!(
-            on.windows(2).all(|w| fit.lfdr[w[1]] <= fit.lfdr[w[0]]),
-            "monotone on side {side}"
-        );
-    }
+    let mut above: Vec<usize> = (0..z.len()).filter(|&i| z[i] > 0.0).collect();
+    above.sort_by(|&a, &b| z[a].total_cmp(&z[b]));
+    assert!(
+        above.windows(2).all(|w| fit.lfdr[w[1]] <= fit.lfdr[w[0]]),
+        "monotone above the null"
+    );
     let at = |v: f64| {
         let i = (0..z.len())
             .min_by(|&a, &b| (z[a] - v).abs().total_cmp(&(z[b] - v).abs()))
             .unwrap();
         fit.lfdr[i]
     };
-    let (centre, up, down) = (at(0.0), at(4.0), at(-4.0));
-    assert!(
-        centre > 0.8 && up < 0.1 && down < 0.1,
-        "{centre} {up} {down}"
-    );
+    let (centre, up) = (at(0.1), at(4.0));
+    assert!(centre > 0.8 && up < 0.1, "{centre} {up}");
 }
 
 #[test]
-fn signal_above_only_leaves_the_lower_side_null() {
+fn the_lower_side_is_null() {
     let mut z = normal_quantiles(900, 0.0, 1.0);
     z.extend(normal_quantiles(50, -4.0, 0.5));
-    let fit = two_groups(&z, NormalNull::THEORETICAL, SignalSide::Above);
+    let fit = two_groups(&z, NormalNull::THEORETICAL);
     assert!(z
         .iter()
         .zip(&fit.lfdr)
@@ -83,15 +72,13 @@ fn nan_has_no_local_fdr_and_infinity_is_signal() {
     let mut z = normal_quantiles(200, 0.0, 1.0);
     z[7] = f64::NAN;
     z[9] = f64::INFINITY;
-    let fit = two_groups(&z, NormalNull::THEORETICAL, SignalSide::Both);
-    // NaN has none; an infinite statistic is signal on a signal side.
-    assert!(fit.lfdr[7].is_nan());
-    assert_eq!(fit.lfdr[9], 0.0);
-    let above = two_groups(&z, NormalNull::THEORETICAL, SignalSide::Above);
+    // NaN has none; +∞ is signal, −∞ null.
+    let above = two_groups(&z, NormalNull::THEORETICAL);
     z[9] = f64::NEG_INFINITY;
-    let below = two_groups(&z, NormalNull::THEORETICAL, SignalSide::Above);
+    let below = two_groups(&z, NormalNull::THEORETICAL);
+    assert!(above.lfdr[7].is_nan());
     assert_eq!((above.lfdr[9], below.lfdr[9]), (0.0, 1.0));
     // Too few finite statistics to fit: no lfdr.
-    let few = two_groups(&[1.0, f64::NAN], NormalNull::THEORETICAL, SignalSide::Both);
+    let few = two_groups(&[1.0, f64::NAN], NormalNull::THEORETICAL);
     assert!(few.lfdr.iter().all(|l| l.is_nan()));
 }

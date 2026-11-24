@@ -225,9 +225,9 @@ fn view_line(name: &str, view: View, g: &[&SimRow], null: bool) -> String {
     )
 }
 
-/// Per scenario: a title line (runs and misclassified exposure), then one line each for the estimate, the unadjusted
-/// difference and the partial adjustments, with estimable share, bias and
-/// coverage against both truths, rejection rate (type I error or power)
+/// Per scenario: a title line (runs and misclassified exposure), then one
+/// line each for the estimate, the unadjusted difference and the partial
+/// adjustments, with estimable share, bias and coverage against both truths, rejection rate (type I error or power)
 /// and, under a planted effect, attenuation. Then the comparison
 /// ([`super::compare::comparison`]). The planted region, if any, goes by
 /// its name `planted`.
@@ -275,12 +275,18 @@ impl From<&EffectRow> for PooledEffect {
     }
 }
 
-/// The pooled rows ranked as the run summary ranks them: estimable
-/// headline effects by p.
+/// Whether a pooled row has an estimate: a headline effect and its p. What
+/// the run summary, `run_lra` and `view_lra` all count.
+pub fn has_estimate(effect: f64, effect_dr_p: f64) -> bool {
+    effect.is_finite() && effect_dr_p.is_finite()
+}
+
+/// The pooled rows ranked as the run summary ranks them: those with an
+/// estimate, by p.
 pub fn rank_pooled(rows: &[PooledEffect]) -> Vec<&PooledEffect> {
     let mut v: Vec<&PooledEffect> = rows
         .iter()
-        .filter(|r| r.effect.is_finite() && r.effect_dr_p.is_finite())
+        .filter(|r| has_estimate(r.effect, r.effect_dr_p))
         .collect();
     v.sort_by(|a, b| a.effect_dr_p.total_cmp(&b.effect_dr_p));
     v

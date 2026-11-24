@@ -26,7 +26,7 @@ use sha2::Digest;
 use std::path::PathBuf;
 
 /// The shard file's layout; a merge refuses any other.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 /// Shard `index` (0-based) of `count`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

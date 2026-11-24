@@ -15,10 +15,12 @@
 //!   null mean, over the 68.27% a normal puts there, at most 1.
 //! - **Mixture density** `f`: a Gaussian kernel estimate (Silverman's
 //!   bandwidth) binned on a grid.
-//! - **Monotone**: lfdr never decreases toward the null mean, so a
-//!   statistic never looks more null than a less extreme one on its side.
+//! - **One-sided**: signal lies above the null mean; at or below it the
+//!   lfdr is 1.
+//! - **Monotone**: above the null mean the lfdr never increases outward, so
+//!   a statistic never looks more null than a less extreme one.
 //! - **Infinite** statistics (a p that underflowed, an SE of 0) are signal
-//!   whatever the density: lfdr 0 on a signal side, 1 off it. NaN stays NaN.
+//!   whatever the density: lfdr 0 at +∞, 1 at −∞. NaN stays NaN.
 //!
 //! References: B. Efron, R. Tibshirani, J. D. Storey and V. Tusher,
 //! "Empirical Bayes analysis of a microarray experiment", JASA 96 (2001);
@@ -59,21 +61,6 @@ impl NormalNull {
     }
 }
 
-/// Which side of the null carries signal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SignalSide {
-    /// Either side (a two-sided test).
-    Both,
-    /// Above the null mean only; at or below it the lfdr is 1.
-    Above,
-}
-
-impl SignalSide {
-    fn carries(self, z: f64, null: NormalNull) -> bool {
-        self == Self::Both || z > null.mean
-    }
-}
-
 /// The two-group model fitted to a set of statistics.
 #[derive(Clone, Debug)]
 pub struct TwoGroups {
@@ -88,15 +75,15 @@ fn std_normal_pdf(z: f64) -> f64 {
     (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt()
 }
 
-/// The two-group model on `z` under `null`, signal on `side`, fitted to the
-/// finite statistics (at least three: callers fit the empirical null first,
-/// which needs as many; with fewer, every lfdr is NaN).
-pub fn two_groups(z: &[f64], null: NormalNull, side: SignalSide) -> TwoGroups {
+/// The one-sided two-group model on `z` under `null`, signal above its mean,
+/// fitted to the finite statistics (at least three: callers fit the
+/// empirical null first, which needs as many; with fewer, every lfdr is NaN).
+pub fn two_groups(z: &[f64], null: NormalNull) -> TwoGroups {
     let mut lfdr: Vec<f64> = z
         .iter()
         .map(|&v| match v {
-            v if v.is_nan() => f64::NAN,
-            v if v.is_infinite() => (!side.carries(v, null)) as u8 as f64,
+            f64::INFINITY => 0.0,
+            f64::NEG_INFINITY => 1.0,
             _ => f64::NAN,
         })
         .collect();
@@ -117,41 +104,26 @@ pub fn two_groups(z: &[f64], null: NormalNull, side: SignalSide) -> TwoGroups {
         / n as f64;
     let null_share = (bulk / 0.682_689_492).min(1.0);
     let f = mixture_density(&t, null);
-    let raw: Vec<f64> = t
-        .iter()
-        .zip(&f)
-        .map(|(&v, &fv)| {
-            if side.carries(v, null) {
-                (null_share * null.density(v) / fv.max(f64::MIN_POSITIVE)).clamp(0.0, 1.0)
-            } else {
-                1.0
-            }
-        })
-        .collect();
-    // Monotone on each side: walking out from the null mean, the lfdr is the
-    // smallest seen so far, so no statistic is more null than a less
+    // At or below the null mean, null; above it, walking outward, the lfdr
+    // is the smallest seen so far, so no statistic is more null than a less
     // extreme one.
-    let above = |k: usize| t[k] > null.mean;
-    let distance = |k: usize| (t[k] - null.mean).abs();
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| {
-        above(a)
-            .cmp(&above(b))
-            .then(distance(a).total_cmp(&distance(b)))
-    });
-    let (mut run, mut walking_above) = (f64::INFINITY, None);
-    for &k in &order {
-        if walking_above != Some(above(k)) {
-            (walking_above, run) = (Some(above(k)), f64::INFINITY);
-        }
-        run = run.min(raw[k]);
+    let (mut above, below): (Vec<usize>, Vec<usize>) = (0..n).partition(|&k| t[k] > null.mean);
+    for k in below {
+        lfdr[finite[k]] = 1.0;
+    }
+    above.sort_by(|&a, &b| t[a].total_cmp(&t[b]));
+    let mut run = f64::INFINITY;
+    for k in above {
+        let raw = null_share * null.density(t[k]) / f[k].max(f64::MIN_POSITIVE);
+        run = run.min(raw.clamp(0.0, 1.0));
         lfdr[finite[k]] = run;
     }
     TwoGroups { null_share, lfdr }
 }
 
 /// The kernel density estimate of `t` (at least three, finite) at each of
-/// them: a Gaussian kernel with Silverman's bandwidth, binned on a grid.
+/// them: a Gaussian kernel with Silverman's bandwidth, binned on a grid and
+/// convolved once.
 ///
 /// The grid spans the data, but no further than 40 null sds from the null
 /// mean, where the null density has vanished (a statistic beyond it is
@@ -174,10 +146,13 @@ fn mixture_density(t: &[f64], null: NormalNull) -> Vec<f64> {
     let hi = s[n - 1].min(null.mean + 40.0 * null.sd) + 4.0 * h;
     let grid = (((hi - lo) / (h / 4.0)).ceil() as usize + 1).clamp(2, GRID_MAX);
     let step = (hi - lo) / (grid - 1) as f64;
-    let bin = |v: f64| (((v - lo) / step).round().max(0.0) as usize).min(grid - 1);
+    let bins: Vec<usize> = t
+        .iter()
+        .map(|&v| (((v - lo) / step).round().max(0.0) as usize).min(grid - 1))
+        .collect();
     let mut hist = vec![0f64; grid];
-    for &v in t {
-        hist[bin(v)] += 1.0;
+    for &b in &bins {
+        hist[b] += 1.0;
     }
     let reach = ((4.0 * h) / step).ceil() as usize;
     let shape: Vec<f64> = (0..=reach)
@@ -185,11 +160,11 @@ fn mixture_density(t: &[f64], null: NormalNull) -> Vec<f64> {
         .collect();
     let mass = step * (2.0 * shape.iter().sum::<f64>() - shape[0]);
     let kernel: Vec<f64> = shape.iter().map(|k| k / (n as f64 * mass)).collect();
-    t.iter()
-        .map(|&v| {
-            let x = bin(v);
+    let density: Vec<f64> = (0..grid)
+        .map(|x| {
             let (a, b) = (x.saturating_sub(reach), (x + reach).min(grid - 1));
             (a..=b).map(|y| hist[y] * kernel[x.abs_diff(y)]).sum()
         })
-        .collect()
+        .collect();
+    bins.iter().map(|&b| density[b]).collect()
 }

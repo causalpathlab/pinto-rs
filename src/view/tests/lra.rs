@@ -206,7 +206,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
     write_table(
         Path::new(&only),
         &[("L1", "R1", 0.01, 25.0, 0.0)],
-        "judged within the --only subset (1 of 3 pairs)",
+        "co-expression lfdr fitted within the --only subset (1 of 3 pairs)",
     );
     let subset = LraSubset {
         only: vec!["L1:R1".into()],
@@ -862,7 +862,7 @@ fn view_lra_changes_nothing_when_a_call_fails_and_redraws_on_a_table_switch() {
     write_table(
         &other,
         &[("L1", "R1", 0.01, 25.0, 0.5)],
-        "judged within the --only subset (1 of 3 pairs)",
+        "co-expression lfdr fitted within the --only subset (1 of 3 pairs)",
     );
     let r = call(&mut open, json!({"table": other.to_string_lossy()})).unwrap();
     assert_eq!(r["selected"]["pair"], "L1:R1");

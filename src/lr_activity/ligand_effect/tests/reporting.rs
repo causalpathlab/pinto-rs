@@ -11,7 +11,7 @@ use crate::lr_activity::ligand_effect::inference::{
     t_crit_975, t_two_sided_p, upper_normal_p, Estimate,
 };
 use crate::lr_activity::ligand_effect::report::report;
-use crate::lr_activity::ligand_effect::rows::{EffectRow, LocalFdr};
+use crate::lr_activity::ligand_effect::rows::EffectRow;
 use crate::lr_activity::ligand_effect::INTERNALS;
 
 // * p-values and normal scores
@@ -95,7 +95,8 @@ fn row(section: &str, ligand: &str, z: f64, zc: f64) -> EffectRow {
         jackknife: crate::lr_activity::ligand_effect::jackknife::Jackknife::NONE,
         effect_dr_p: f64::NAN,
         coexpr_p: f64::NAN,
-        coexpr_lfdr: LocalFdr::NAN,
+        coexpr_lfdr: f64::NAN,
+        coexpr_lfdr_theoretical_null: f64::NAN,
         n_pairs_same_ligand: 0,
         warnings: String::new(),
     }
@@ -152,13 +153,12 @@ fn report_gives_p_values_and_says_why_a_pair_has_no_estimate() {
     assert_eq!(rows[3].n_pairs_same_ligand, 1);
     // A section too small has p-values and no local fdr.
     assert!((rows[3].effect_dr_p - rows[0].effect_dr_p).abs() < 1e-12);
-    assert!(rows[3].coexpr_lfdr.empirical_null.is_nan());
+    assert!(rows[3].coexpr_lfdr.is_nan());
     // Far out the null is gone, at its centre it is all there is.
-    let l = |i: usize| rows[i].coexpr_lfdr;
-    assert!(l(0).empirical_null < 1e-6 && l(0).theoretical_null < 1e-6);
+    assert!(rows[0].coexpr_lfdr < 1e-6 && rows[0].coexpr_lfdr_theoretical_null < 1e-6);
     // One-sided: a negative co-expression score is null.
     assert!(rows[1].coexpr_p > 0.99);
-    assert_eq!(l(1).empirical_null, 1.0);
+    assert_eq!(rows[1].coexpr_lfdr, 1.0);
 }
 
 /// Spatial autocorrelation moves every co-expression score alike: the null
@@ -170,8 +170,13 @@ fn an_inflated_coexpression_family_is_read_against_its_own_null() {
         r.coexpr_log_or *= 1.6;
     }
     report(&mut rows, INTERNALS.min_arm);
-    let l = rows[0].coexpr_lfdr;
-    assert!(l.empirical_null > l.theoretical_null, "{l:?}");
+    let r = &rows[0];
+    assert!(
+        r.coexpr_lfdr > r.coexpr_lfdr_theoretical_null,
+        "{} {}",
+        r.coexpr_lfdr,
+        r.coexpr_lfdr_theoretical_null
+    );
 }
 
 /// A co-expression score that is infinite (an SE of 0) stays in the fit as
@@ -181,7 +186,7 @@ fn the_strongest_coexpression_stays_in_the_local_fdr() {
     let mut rows = among_nulls(vec![row("all", "L1", 10.0, 10.0)]);
     rows[0].coexpr_se = 0.0;
     report(&mut rows, INTERNALS.min_arm);
-    assert_eq!(rows[0].coexpr_lfdr.empirical_null, 0.0);
+    assert_eq!(rows[0].coexpr_lfdr, 0.0);
 }
 
 // * Identifiability

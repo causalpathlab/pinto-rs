@@ -2,7 +2,7 @@
 
 use super::compare::SimRun;
 use super::summary::PooledEffect;
-use super::write::{refuse_q_value_table, sim_cols};
+use super::write::{refuse_q_value_columns, sim_cols};
 use crate::lr_activity::ligand_effect::simulate::{
     ConfoundShape, ConfounderKind, Scenario, COMPARED,
 };
@@ -118,7 +118,8 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
         .into_iter()
         .chain(CONTROLS.iter().flat_map(|c| [c.column, c.column_p]))
         .collect();
-    refuse_q_value_table(path)?;
+    let names = legume_numeric::matrix::parquet::peek_parquet_field_names(path)?;
+    refuse_q_value_columns(names.iter().map(|n| &**n))?;
     let (s, mut x) = read_table_columns(path, &strings, &numbers)?;
     let q_scope = s[4]
         .first()

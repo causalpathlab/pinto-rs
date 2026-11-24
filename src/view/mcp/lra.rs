@@ -3,7 +3,7 @@
 
 use super::super::lra::{self as lra_layer, LraView, PairShow, Sort};
 use super::{value_enum, Open};
-use crate::lr_activity::ligand_effect::output::CONTROLS;
+use crate::lr_activity::ligand_effect::output::{has_estimate, CONTROLS};
 use crate::lr_activity::outputs::opt_finite;
 use crate::mcp::shown_path;
 use legume_mcp::{Call, Content};
@@ -116,7 +116,10 @@ impl Open {
         let v = self.lra.as_ref().expect("the layer is read");
         let table = v.table();
         let rows = &table.rows;
-        let estimable = rows.iter().filter(|r| r.effect.is_finite()).count();
+        let estimable = rows
+            .iter()
+            .filter(|r| has_estimate(r.effect, r.effect_dr_p))
+            .count();
         let shown = v.visible();
         let list: Vec<Value> = shown
             .iter()

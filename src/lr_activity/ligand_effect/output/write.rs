@@ -12,16 +12,12 @@ use legume_numeric::matrix::parquet::{write_named_table, Column};
 pub const Q_SCOPE_ALL: &str = "all pairs";
 
 /// Refused: a contact-effect table made before 0.17.16, with BH q-values
-/// and verdicts (it has `effect_dr_q`, or `effect_q` before 0.17.5): its q
-/// is not an lfdr, and it lacks the p-values the viewer
-/// reads. Only the schema is read; the caller names the table.
-pub fn refuse_q_value_table(path: &str) -> anyhow::Result<()> {
-    let names = legume_numeric::matrix::parquet::peek_parquet_field_names(path)?;
-    let has_q = names
-        .iter()
-        .any(|n| &**n == "effect_dr_q" || &**n == "effect_q");
+/// and verdicts (it has `effect_dr_q`, or `effect_q` before 0.17.5), read
+/// by its column names: its q is not an lfdr, and it lacks the p-values the
+/// viewer reads. The caller names the table.
+pub fn refuse_q_value_columns<'a>(mut names: impl Iterator<Item = &'a str>) -> anyhow::Result<()> {
     anyhow::ensure!(
-        !has_q,
+        !names.any(|n| n == "effect_dr_q" || n == "effect_q"),
         "made by a pinto lra before 0.17.16, which reported BH q-values and \
          verdicts; rerun pinto lra (to a new --out, or with this table removed)"
     );
@@ -72,7 +68,10 @@ pub fn write_effects(
         .f("effect_dr_df", |(r, _)| r.effects.competent.df)
         .f("effect_dr_p", |(r, _)| r.effect_dr_p)
         .f("coexpr_p", |(r, _)| r.coexpr_p)
-        .lfdr("coexpr", |(r, _)| r.coexpr_lfdr)
+        .f("coexpr_lfdr", |(r, _)| r.coexpr_lfdr)
+        .f("coexpr_lfdr_theoretical_null", |(r, _)| {
+            r.coexpr_lfdr_theoretical_null
+        })
         .i("n_pairs_same_ligand", |(r, _)| r.n_pairs_same_ligand)
         .est("effect_dr_section", |(r, _)| r.effects.steps[0])
         .est("effect_dr_spatial", |(r, _)| r.effects.steps[1])

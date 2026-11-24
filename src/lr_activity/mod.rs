@@ -184,8 +184,9 @@ pub fn lra_long_about() -> String {
          downloads, PINTO_REFERENCE_REFRESH=1 rebuilds it.\n\
          \n\
          Nothing is judged: each pair's effect, its effect in receptor-negative\n\
-         receivers and their contrast are reported with SE, df and p (the SE\n\
-         widened by a tile jackknife), and co-expression with its local fdr.\n\
+         receivers and their contrast are reported with SE, df and p (the effect's\n\
+         and the contrast's SE from a tile jackknife, the receptor-negative\n\
+         effect's clustered), and co-expression with its local fdr.\n\
          `warnings` says why a pair has no estimate.\n\
          Check what this tissue can detect with `pinto lra simulate`.\n\
          \n\

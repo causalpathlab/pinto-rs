@@ -815,7 +815,8 @@ fn shard_note(shard: Shard, out: &str, link_community: Option<i64>) -> String {
         "A shard writes no table and records nothing in the manifest. Run every shard \
          I/{n} (I from 0 to {last}) with the same arguments, each as its own job (a Slurm \
          array task, I = $SLURM_ARRAY_TASK_ID); once all {n} are done, run_lra_merge {} \
-         writes the tables of the whole run, its local fdrs over every pair.",
+         writes the tables of the whole run, its p-values and co-expression's local fdr \
+         over every pair.",
         merge_args(shard, out, link_community),
         n = shard.count,
         last = shard.count - 1,
@@ -856,8 +857,9 @@ fn push_note(reply: &mut [Content], note: &str) {
 }
 
 /// The reply to a finished `pinto lra` for `a`: for the contact effect, how
-/// many pooled pairs have an estimate and those with the smallest p, then the command that made the tables (when known), the files
-/// and what to do next.
+/// many pooled pairs have an estimate and those with the smallest p, then
+/// the command that made the tables (when known), the files and what to do
+/// next.
 fn lra_reply(
     a: &LraToolArgs,
     method: LraMethod,
@@ -928,7 +930,7 @@ pub(super) fn effects_summary(rows: &[output::PooledEffect]) -> Value {
     json!({ "pairs": rows.len(), "estimable": ranked.len(), "top": top })
 }
 
-/// A local fdr to three significant digits; null when there is none.
+/// A probability (a p) to three significant digits; null when there is none.
 fn sig(x: f64) -> Value {
     format!("{x:.2e}")
         .parse::<f64>()

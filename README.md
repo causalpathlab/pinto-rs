@@ -317,7 +317,7 @@ clustering behind the labels may have used them. `--cell-types` (a `cell`,
 `--region` (a `cell`, `region` table, such as a fit's donor-only communities)
 adds an indicator per region within each section to the adjustment, which the
 smooth fields cannot give at a sharp edge, and a row per region
-(`region:<name>`, judged within the region). Every section and region
+(`region:<name>`, co-expression's lfdr fitted within the region). Every section and region
 row also carries `effect_dr_vs_rest` (with `_se`, `_df`, `_p`): its effect minus
 that on every other receiver, from the same fit, the test that an effect is
 the region's or the donor's own. A region row with p < 0.2 is checked by a
@@ -442,8 +442,9 @@ row (`effect_dr_df` is that count less one). A row whose signal sits in
 a few of many tiles, as a region of one donor does, is tested on those few.
 
 The negative control is the effect in receptor-negative receivers
-(`effect_dr_incompetent`, with `_se`, `_df` and `_p`) and the contrast
-between the two (`effect_dr_contrast`, likewise): an effect that does not
+(`effect_dr_incompetent`, with `_se`, `_df` and `_p`; its SE is the
+clustered one, which no jackknife widens) and the contrast between the two
+(`effect_dr_contrast`, likewise, its SE from the jackknife): an effect that does not
 exceed the control is not specific to the receptor. A hidden field can move
 the control too, so a control that is itself significant does not rule out
 a larger effect.

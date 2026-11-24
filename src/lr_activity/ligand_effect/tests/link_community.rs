@@ -178,7 +178,7 @@ fn a_communitys_tables_shards_and_q_scope_are_its_own() {
     );
     assert_eq!(
         q_scope(&[], 2, 2, Some(4)),
-        "judged within link community 4"
+        "co-expression lfdr fitted within link community 4"
     );
 }
 

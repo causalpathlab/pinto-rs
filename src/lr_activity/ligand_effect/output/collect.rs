@@ -62,8 +62,10 @@ pub fn collect_link_community_tables(tables: &[String], out: &str) -> anyhow::Re
     let mut batches: Vec<(String, RecordBatch)> = Vec::new();
     for table in tables {
         let link_community = link_community_of_table(table)?;
-        super::refuse_q_value_table(table).map_err(|e| anyhow::anyhow!("{table}: {e}"))?;
-        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(table)?)?.build()?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(table)?)?;
+        super::refuse_q_value_columns(builder.schema().fields().iter().map(|f| f.name().as_str()))
+            .map_err(|e| anyhow::anyhow!("{table}: {e}"))?;
+        let reader = builder.build()?;
         for batch in reader {
             let batch = batch?;
             for field in batch.schema().fields() {

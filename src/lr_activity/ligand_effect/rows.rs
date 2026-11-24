@@ -6,23 +6,6 @@ use super::inference::Estimate;
 use super::jackknife::Jackknife;
 use super::tissue::ALL_SECTIONS;
 
-/// A statistic's local fdr ([`crate::util::local_fdr`]) under the null
-/// fitted to the bulk of its family (Efron's empirical null) and under the
-/// theoretical `N(0, 1)`; NaN in a family too small to fit
-/// ([`super::report::MIN_STATISTICS_FOR_LOCAL_FDR`]).
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
-pub struct LocalFdr {
-    pub empirical_null: f64,
-    pub theoretical_null: f64,
-}
-
-impl LocalFdr {
-    pub const NAN: Self = Self {
-        empirical_null: f64::NAN,
-        theoretical_null: f64::NAN,
-    };
-}
-
 /// One output row: a pair in one section, or pooled.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct EffectRow {
@@ -66,10 +49,13 @@ pub struct EffectRow {
     /// clusters − 1 degrees of freedom ([`super::inference::Estimate::p`]).
     pub effect_dr_p: f64,
     /// One-sided (positive) normal p of the co-expression log odds ratio,
-    /// and its local fdr among the section's pairs, signal above the null only
-    /// ([`super::report::report`]).
+    /// and its local fdr among the section's pairs under the null fitted to
+    /// their bulk, signal above the null only ([`super::report::report`]);
+    /// NaN in a section too small to fit.
     pub coexpr_p: f64,
-    pub coexpr_lfdr: LocalFdr,
+    pub coexpr_lfdr: f64,
+    /// The same under `N(0, 1)`.
+    pub coexpr_lfdr_theoretical_null: f64,
     /// Pairs in the section sharing this pair's ligand.
     pub n_pairs_same_ligand: usize,
     /// Why a pair is not estimable, or that its SE was not widened by the
@@ -78,9 +64,8 @@ pub struct EffectRow {
 }
 
 impl EffectRow {
-    /// A row holding what [`super::report::report_row`] reads, the rest
-    /// blank: the estimands, co-expression and the exposure's identity share.
-    /// `lra simulate` reports its runs through this.
+    /// A row holding the estimands, co-expression and the exposure's
+    /// identity share, the rest blank for the estimate to fill.
     pub fn pending(
         effects: ScopeEffects,
         (coexpr_log_or, coexpr_se): (f64, f64),
@@ -108,7 +93,8 @@ impl EffectRow {
             jackknife: Jackknife::NONE,
             effect_dr_p: f64::NAN,
             coexpr_p: f64::NAN,
-            coexpr_lfdr: LocalFdr::NAN,
+            coexpr_lfdr: f64::NAN,
+            coexpr_lfdr_theoretical_null: f64::NAN,
             n_pairs_same_ligand: 0,
             warnings: String::new(),
         }

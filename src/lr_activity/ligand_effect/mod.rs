@@ -35,7 +35,8 @@
 //! **Across pairs** ([`report::report`]): nothing is judged. The causal
 //! statistics (the competent effect, the effect in receptor-negative
 //! receivers, their contrast) are reported as estimate, SE, df and
-//! two-sided p, the SE widened by the tile jackknife. Co-expression, a
+//! two-sided p: the effect's and the contrast's SE from the tile
+//! jackknife, the receptor-negative effect's the clustered one. Co-expression, a
 //! baseline, also gets Efron's local fdr ([`crate::util::local_fdr`])
 //! within the pooled rows and within each section. When the ligand marks a
 //! cell type, exposure is nearly "has a neighbour of that type" and cannot

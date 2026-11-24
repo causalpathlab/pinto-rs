@@ -4,16 +4,17 @@
 //!
 //! The causal statistics (the competent effect, the effect in
 //! receptor-negative receivers, their contrast) are reported as estimate,
-//! SE, df and two-sided p: their SE is already calibrated by the tile
-//! jackknife, and their null is the theoretical one. Co-expression, a
+//! SE, df and two-sided p against the theoretical null: the effect's and
+//! the contrast's SE from the tile jackknife, the receptor-negative
+//! effect's the clustered one, which no jackknife widens. Co-expression, a
 //! baseline that spatial autocorrelation shifts and widens alike in every
 //! pair, also gets Efron's local fdr within its section, under the null
 //! fitted to the bulk of the section's pairs and under `N(0, 1)`.
 
 use super::inference::{upper_normal_p, ONE_CLUSTER_DF};
 use super::options::thin_arm;
-use super::rows::{EffectRow, LocalFdr};
-use crate::util::local_fdr::{two_groups, NormalNull, SignalSide};
+use super::rows::EffectRow;
+use crate::util::local_fdr::{two_groups, NormalNull};
 
 /// Fewest finite co-expression scores in a section for their local fdr: the
 /// two-group model's null and mixture density are fitted to the section
@@ -35,7 +36,8 @@ pub fn report(rows: &mut [EffectRow], min_arm: usize) {
             .iter()
             .map(|&i| rows[i].coexpr_log_or / rows[i].coexpr_se)
             .collect();
-        let coexpr_lfdr = coexpression_local_fdr(section, &coexpr_z);
+        let (coexpr_lfdr, coexpr_lfdr_theoretical_null) =
+            coexpression_local_fdr(section, &coexpr_z);
         let ligands: Vec<String> = idx
             .iter()
             .map(|&i| rows[i].ligand.to_ascii_uppercase())
@@ -48,52 +50,46 @@ pub fn report(rows: &mut [EffectRow], min_arm: usize) {
             let r = &mut rows[i];
             r.n_pairs_same_ligand = pairs_of_ligand[ligands[k].as_str()];
             r.coexpr_lfdr = coexpr_lfdr[k];
-            report_row(r, min_arm);
+            r.coexpr_lfdr_theoretical_null = coexpr_lfdr_theoretical_null[k];
+            r.coexpr_p = upper_normal_p(coexpr_z[k]);
+            r.effect_dr_p = r.effects.competent.p();
+            r.warnings = warnings(r, min_arm);
         }
     }
 }
 
-/// One row's own p-values and warnings, needing no other row: what a run of
-/// `lra simulate` reports.
-pub fn report_row(row: &mut EffectRow, min_arm: usize) {
-    row.effect_dr_p = row.effects.competent.p();
-    row.coexpr_p = upper_normal_p(row.coexpr_log_or / row.coexpr_se);
-    row.warnings = warnings(row, min_arm);
-}
-
 /// Co-expression's local fdr over one section's scores `z` (one-sided,
 /// positive), under the null fitted to their bulk and under `N(0, 1)`; NaN
-/// in a section too small to fit.
-fn coexpression_local_fdr(section: &str, z: &[f64]) -> Vec<LocalFdr> {
-    let finite = z.iter().filter(|x| !x.is_nan()).count();
-    let null = (finite >= MIN_STATISTICS_FOR_LOCAL_FDR)
-        .then(|| NormalNull::empirical(z))
-        .flatten();
-    let Some(null) = null else {
+/// in a section too small to fit, and under the fitted null where the bulk
+/// has no spread.
+fn coexpression_local_fdr(section: &str, z: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let finite = z.iter().filter(|x| x.is_finite()).count();
+    if finite < MIN_STATISTICS_FOR_LOCAL_FDR {
         log::info!(
             "co-expression, section {section}: {finite} scores, too few for a local fdr \
              ({MIN_STATISTICS_FOR_LOCAL_FDR} needed)"
         );
-        return vec![LocalFdr::NAN; z.len()];
+        return (vec![f64::NAN; z.len()], vec![f64::NAN; z.len()]);
+    }
+    let theoretical = two_groups(z, NormalNull::THEORETICAL);
+    let empirical = match NormalNull::empirical(z) {
+        Some(null) => {
+            let fit = two_groups(z, null);
+            log::info!(
+                "co-expression, section {section}: null N({:.2}, {:.2}²), null share {:.2}, \
+                 over {finite} scores",
+                null.mean,
+                null.sd,
+                fit.null_share
+            );
+            fit.lfdr
+        }
+        None => {
+            log::info!("co-expression, section {section}: no spread in the bulk, no fitted null");
+            vec![f64::NAN; z.len()]
+        }
     };
-    let empirical = two_groups(z, null, SignalSide::Above);
-    let theoretical = two_groups(z, NormalNull::THEORETICAL, SignalSide::Above);
-    log::info!(
-        "co-expression, section {section}: null N({:.2}, {:.2}²), null share {:.2}, over \
-         {finite} scores",
-        null.mean,
-        null.sd,
-        empirical.null_share
-    );
-    empirical
-        .lfdr
-        .iter()
-        .zip(&theoretical.lfdr)
-        .map(|(&e, &t)| LocalFdr {
-            empirical_null: e,
-            theoretical_null: t,
-        })
-        .collect()
+    (empirical, theoretical.lfdr)
 }
 
 /// Why the row's competent effect has no estimate.

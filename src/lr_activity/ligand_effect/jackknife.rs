@@ -76,9 +76,10 @@ impl Jackknife {
 
     /// `e` with its competent effect's SE, the negative-control contrast's
     /// (competent less incompetent, which says whether the effect is
-    /// specific to receptor-carrying receivers) and the contrast with the rest scaled up by the ratios,
-    /// never down: the jackknife adds the nuisance error the clustered SE
-    /// leaves out, and a ratio below 1 is its own noise.
+    /// specific to receptor-carrying receivers) and the contrast with the
+    /// rest scaled up by the ratios, never down: the jackknife adds the
+    /// nuisance error the clustered SE leaves out, and a ratio below 1 is its
+    /// own noise.
     pub fn widen(&self, e: &mut ScopeEffects) {
         let scale = |x: &mut Estimate, r: f64| {
             if r.is_finite() && r > 1.0 {

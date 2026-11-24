@@ -165,9 +165,9 @@ pub fn q_scope(
     match (link_community, only.is_empty()) {
         (None, true) => super::output::Q_SCOPE_ALL.into(),
         (None, false) => super::only::q_scope(n_pairs, n_all),
-        (Some(k), true) => format!("judged within link community {k}"),
+        (Some(k), true) => format!("co-expression lfdr fitted within link community {k}"),
         (Some(k), false) => format!(
-            "judged within link community {k} and the --only subset ({n_pairs} of {n_all} pairs)"
+            "co-expression lfdr fitted within link community {k} and the --only subset ({n_pairs} of {n_all} pairs)"
         ),
     }
 }

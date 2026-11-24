@@ -101,7 +101,7 @@ pub fn tag(list: &[Box<str>]) -> String {
 
 /// What a subset table's `q_scope` column says.
 pub fn q_scope(n: usize, of: usize) -> String {
-    format!("judged within the --only subset ({n} of {of} pairs)")
+    format!("co-expression lfdr fitted within the --only subset ({n} of {of} pairs)")
 }
 
 /// Which of `pairs` `wanted` names; an entry none answers is an error
