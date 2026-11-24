@@ -122,6 +122,9 @@ lra_tool_args!(LraToolArgs {
     pub marginal_baselines: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marginal_permutations: Option<usize>,
+    /// `--null-permutations`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub null_permutations: Option<u32>,
 });
 
 impl LraToolArgs {
@@ -140,7 +143,8 @@ impl LraToolArgs {
 
     /// What `pinto lra` writes for these arguments: with `shard`, its shard
     /// file alone; else [`lra_outputs`], and with `marginal_baselines` the
-    /// per-type-pair table beside the contact-effect table.
+    /// per-type-pair table, with `null_permutations` the null table, beside
+    /// the contact-effect table.
     fn outputs(&self, method: LraMethod, out: &str) -> Vec<PathBuf> {
         use crate::lr_activity::ligand_effect::link_community_scope;
         if let Ok(Some(s)) = self.shard() {
@@ -152,9 +156,12 @@ impl LraToolArgs {
             &self.only(),
             self.link_community,
         );
+        let table = made[0].to_string_lossy().into_owned();
         if self.marginal_baselines && method == LraMethod::ContactEffect {
-            let table = made[0].to_string_lossy().into_owned();
             made.push(output::celltype_beside(&table).into());
+        }
+        if self.null_permutations.unwrap_or(0) > 0 && method == LraMethod::ContactEffect {
+            made.push(output::null_beside(&table).into());
         }
         made
     }
@@ -195,6 +202,7 @@ impl LraToolArgs {
                 self.marginal_permutations
                     .unwrap_or(crate::lr_activity::ligand_effect::PERMUTATIONS)
             }),
+            null_permutations: self.null_permutations.filter(|&k| k > 0),
             ..d
         }
     }

@@ -330,6 +330,21 @@ pub struct SrtLrActivityArgs {
     )]
     pub marginal_permutations: usize,
 
+    #[arg(
+        long,
+        value_name = "K",
+        default_value_t = 0,
+        help = "Also estimate every pair under K permutation draws of its ligand (a null table)",
+        long_help = "Also estimate every pair (contact-effect) again under K draws of its\n\
+                     ligand shuffled within each identity bin x spatial tile, and write\n\
+                     each draw's estimates (the doubly robust headline and the outcome\n\
+                     regression) to {table}.null.parquet beside the table, recorded in\n\
+                     the manifest as outputs.lra.null. A comparison for the reader, not\n\
+                     a verdict: lra reads nothing from it. Each draw costs about one\n\
+                     more run. Off (0) by default."
+    )]
+    pub null_permutations: u32,
+
     // * Co-expression methods
     #[arg(
         long,

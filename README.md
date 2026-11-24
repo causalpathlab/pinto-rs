@@ -459,6 +459,19 @@ fewer than 100 pairs (a short `--only` list, a small link community) has no
 local fdr. Nothing is corrected by Benjamini–Hochberg, whose theoretical
 null and dependence condition these tables do not meet.
 
+`--null-permutations K` estimates every pair again under `K` draws of its
+ligand shuffled within each identity bin × spatial tile: the ligand keeps
+its cell-type make-up and coarse spatial pattern, and only the fine alignment
+of contacts with responders breaks. Each draw's estimates go to
+`{table}.null.parquet` beside the table (`outputs.lra.null` in the manifest),
+one row per pair, section, draw and estimator (`dr`, the headline, and
+`outcome`, the outcome regression alone), with `estimate`, `se`, `df` and `p`.
+It is a comparison for the reader, not a verdict: lra reads nothing from it,
+and since cells are not exchangeable across contacts this null is narrower
+than the truth's. A draw is seeded by the run's seed, the ligand and its
+index, so the pairs of one ligand share it, and a shard draws it as the whole
+run does. Each draw costs about one more run.
+
 ### `lra-simulate`: power and calibration check
 
 Can this tissue detect ligand effects of a given size, and does the

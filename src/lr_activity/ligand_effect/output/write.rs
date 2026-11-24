@@ -2,6 +2,7 @@
 
 use super::columns::{f32s, Columns};
 use crate::lr_activity::ligand_effect::baselines::{Baselines, CellTypeTest, TypeLabels, TypePair};
+use crate::lr_activity::ligand_effect::null_draws::NullRow;
 use crate::lr_activity::ligand_effect::rows::{CurvePoint, EffectRow, Moments};
 use crate::lr_activity::ligand_effect::simulate::{RegionRead, SimRow, COMPARED};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
@@ -141,6 +142,37 @@ pub fn write_effects(
 /// `tau` (`quantile` of the positive exposures), its SE and df, the
 /// pointwise 95% interval and the simultaneous 95% band over the pair's
 /// thresholds.
+/// `{table}.null.parquet` ([`super::null_beside`]): one row per pair,
+/// section, null draw and estimator, with the estimate under that draw.
+pub fn write_null(path: &str, rows: &[NullRow]) -> anyhow::Result<()> {
+    let s =
+        |f: fn(&NullRow) -> &str| -> Vec<Box<str>> { rows.iter().map(|r| f(r).into()).collect() };
+    let (section, ligand, receptor) = (s(|r| &r.section), s(|r| &r.ligand), s(|r| &r.receptor));
+    let (null, estimator) = (s(|r| &r.null), s(|r| &r.estimator));
+    let draw: Vec<i32> = rows.iter().map(|r| r.draw as i32).collect();
+    let g = |f: fn(&NullRow) -> f64| f32s(rows, f);
+    let cols = [
+        ("estimate", g(|r| r.estimate.theta)),
+        ("se", g(|r| r.estimate.se)),
+        ("df", g(|r| r.estimate.df)),
+        ("p", g(|r| r.estimate.p())),
+    ];
+    let mut table = vec![
+        ("section".into(), Column::Str(&section)),
+        ("ligand".into(), Column::Str(&ligand)),
+        ("receptor".into(), Column::Str(&receptor)),
+        ("null".into(), Column::Str(&null)),
+        ("draw".into(), Column::I32(&draw)),
+        ("estimator".into(), Column::Str(&estimator)),
+    ];
+    table.extend(
+        cols.iter()
+            .map(|(n, v)| (n.to_string().into(), Column::F32(v))),
+    );
+    let names: Vec<Box<str>> = (0..rows.len()).map(|i| i.to_string().into()).collect();
+    write_named_table(path, "row", &names, &table)
+}
+
 pub fn write_curve(path: &str, rows: &[EffectRow]) -> anyhow::Result<()> {
     let pts: Vec<(&EffectRow, &CurvePoint)> = rows
         .iter()

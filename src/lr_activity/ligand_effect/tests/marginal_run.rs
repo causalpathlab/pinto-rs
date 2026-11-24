@@ -113,6 +113,7 @@ fn marginal_run(dir: &Path, out: &str, manifest: &Path, only: &[Box<str>], shard
             shard,
             marginal_baselines: true,
             link_community: None,
+            null_permutations: 0,
         },
     );
 }
@@ -126,6 +127,8 @@ pub(super) struct TestRunChoices<'a> {
     /// `--link-community K` and each contact's community, aligned with
     /// [`test_tissue_contacts`].
     pub link_community: Option<(i64, &'a [i64])>,
+    /// `--null-permutations`.
+    pub null_permutations: u32,
 }
 
 /// The test tissue's contacts: two [`SIDE`]-square lattices.
@@ -151,6 +154,7 @@ pub(super) fn run_on_the_test_tissue(
         shard,
         marginal_baselines,
         link_community,
+        null_permutations,
     } = *choices;
     let n = SECTIONS * SIDE * SIDE;
     let data = data(dir, n);
@@ -194,6 +198,7 @@ pub(super) fn run_on_the_test_tissue(
                 region_jackknife: RegionJackknife::NoRefit,
                 abf_prior_scale: crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
                 marginal: marginal_baselines.then_some(PERMUTATIONS),
+                null_permutations,
                 memory_budget: None,
             },
             data: &data,

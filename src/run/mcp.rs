@@ -990,6 +990,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "min_gene_count": lra("min_gene_count", json!({"type": "number"})),
                     "marginal_baselines": lra("marginal_baselines", json!({"type": "boolean"})),
                     "marginal_permutations": lra("marginal_permutations", json!({"type": "integer", "minimum": 1})),
+                    "null_permutations": lra("null_permutations", json!({"type": "integer", "minimum": 0})),
                     "background": background(),
                 },
                 "additionalProperties": false,

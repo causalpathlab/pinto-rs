@@ -5,6 +5,7 @@ use super::estimate::{estimate_pair_shared, PairData};
 use super::fits::LigandShare;
 use super::genes::GeneStore;
 use super::memory::{ligand_memory, pair_memory, pair_workers, run_bounded};
+use super::null_draws::NullRow;
 use super::options::EffectOpts;
 use super::overlap::NuisanceOpts;
 use super::pairs::{pair_genes, reference_pairs, scarcest_subunit, signalling_genes, Pair};
@@ -20,6 +21,7 @@ use crate::util::common::*;
 use data_beans::utilities::name_matching::GeneIndex;
 use std::path::Path;
 
+mod null;
 mod single;
 
 pub use single::{clear_single_outputs, run_simulate_one};
@@ -335,11 +337,16 @@ fn ligand_groups(pairs: &[Pair]) -> Vec<Vec<usize>> {
     group(&dense_ids(pairs.iter().map(|p| p.ligand_genes.as_slice())))
 }
 
-/// One pair's rows, its propensities bordered from its ligand's `share`; a
-/// pair that fails is warned about and has none.
-fn estimate_one(prep: &Prepared, p: &Pair, share: &LigandShare) -> Vec<rows::EffectRow> {
+/// One pair's rows on the ligand counts `lig` (its own, or a null draw's),
+/// its propensities bordered from its ligand's `share`; a pair that fails
+/// is warned about and has none.
+fn estimate_one(
+    prep: &Prepared,
+    p: &Pair,
+    lig: &[f64],
+    share: &LigandShare,
+) -> Vec<rows::EffectRow> {
     let (store, local) = (&prep.store, &prep.local);
-    let lig = prep.ligand_counts(p);
     let rec = prep.receptor_counts(p);
     // Two weightings of the program, as given and with hub targets
     // down-weighted by specificity, averaged by Rubin's rules: the
@@ -356,7 +363,7 @@ fn estimate_one(prep: &Prepared, p: &Pair, share: &LigandShare) -> Vec<rows::Eff
     let data = PairData {
         ligand: &p.ligand,
         receptor: &p.receptor,
-        ligand_counts: &lig,
+        ligand_counts: lig,
         receptor_counts: &rec,
         targets: &plain,
         reweighted: (specific.len() >= INTERNALS.min_targets).then_some(specific.as_slice()),
@@ -387,7 +394,8 @@ fn estimate_pairs(prep: &Prepared) -> Vec<Vec<rows::EffectRow>> {
         group
             .iter()
             .map(|&k| {
-                let out = estimate_one(prep, &prep.pairs[k], &share);
+                let p = &prep.pairs[k];
+                let out = estimate_one(prep, p, &prep.ligand_counts(p), &share);
                 pb.inc();
                 (k, out)
             })
@@ -516,11 +524,12 @@ fn record_tables(
     path: &str,
     curve_path: &str,
     celltype: Option<&str>,
+    null: Option<&str>,
 ) -> anyhow::Result<()> {
     let recorded = |p: &str| crate::lr_activity::recorded(Path::new(p));
     let options = record.options.clone();
     let (table, curve) = (recorded(path), recorded(curve_path));
-    let celltype = celltype.map(recorded);
+    let (celltype, null) = (celltype.map(recorded), null.map(recorded));
     if only.is_empty() && options.link_community.is_none() {
         let reference = record
             .reference_record
@@ -530,6 +539,7 @@ fn record_tables(
             o.table = Some(table);
             o.curve = Some(curve);
             o.celltype = celltype;
+            o.null = null;
             o.record_options(options);
             o.reference = reference;
         })
@@ -541,6 +551,7 @@ fn record_tables(
             table,
             curve,
             celltype,
+            null,
             options: Some(options),
         };
         self::record(&record.manifest, record.abf_prior_scale, |o| {
@@ -559,6 +570,7 @@ fn write_tables(
     n_pairs: usize,
     rows: &[rows::EffectRow],
     celltype: Option<&[output::CelltypeRow]>,
+    null: Option<&[NullRow]>,
 ) -> anyhow::Result<(String, String)> {
     let link_community = record.options.link_community;
     let (path, curve_path) =
@@ -577,7 +589,18 @@ fn write_tables(
         );
     }
     let celltype = celltype.map(|_| celltype_path.as_str());
-    record_tables(record, only, n_pairs, &path, &curve_path, celltype)?;
+    let null_path = output::null_beside(&path);
+    if let Some(null) = null {
+        output::write_null(&null_path, null)?;
+        info!(
+            target: LOG_TARGET,
+            "Wrote {} null estimates to {}",
+            null.len(),
+            crate::util::staging::final_str(&null_path)
+        );
+    }
+    let null = null.map(|_| null_path.as_str());
+    record_tables(record, only, n_pairs, &path, &curve_path, celltype, null)?;
     Ok((path, q_scope))
 }
 
@@ -609,6 +632,7 @@ fn write_shard(
     prep: &Prepared,
     by_pair: Vec<Vec<rows::EffectRow>>,
     marginal: Option<&Marginal>,
+    mut null: Option<Vec<Vec<NullRow>>>,
 ) -> anyhow::Result<()> {
     let record = table_record(a, prep, marginal);
     let names = prep.all_names.iter().map(|(l, r)| (&**l, &**r));
@@ -624,6 +648,10 @@ fn write_shard(
             celltype: celltype
                 .as_mut()
                 .map(|c| std::mem::take(&mut c[k]))
+                .unwrap_or_default(),
+            null: null
+                .as_mut()
+                .map(|n| std::mem::take(&mut n[k]))
                 .unwrap_or_default(),
         })
         .collect();
@@ -654,15 +682,26 @@ pub fn run(inp: &RunInputs<'_>) -> anyhow::Result<()> {
             attach_marginals(rows, &prep, m);
         }
     }
+    let null = (a.null_permutations > 0)
+        .then(|| null::estimate_null_draws(&prep, a.null_permutations, a.seed));
     if let Some(s) = a.shard {
-        return write_shard(a, s, &prep, by_pair, marginal.as_ref());
+        return write_shard(a, s, &prep, by_pair, marginal.as_ref(), null);
     }
     let record = table_record(a, &prep, marginal.as_ref());
     let celltype: Option<Vec<output::CelltypeRow>> = marginal
         .as_ref()
         .map(|m| celltype_rows(&prep, m).into_iter().flatten().collect());
     let rows = by_pair.into_iter().flatten().collect();
-    finish(a.out, a.only, &record, prep.pairs.len(), rows, celltype)?;
+    let null = null.map(|n| n.into_iter().flatten().collect());
+    finish(
+        a.out,
+        a.only,
+        &record,
+        prep.pairs.len(),
+        rows,
+        celltype,
+        null,
+    )?;
     Ok(())
 }
 
@@ -677,9 +716,18 @@ fn finish(
     n_pairs: usize,
     mut rows: Vec<rows::EffectRow>,
     celltype: Option<Vec<output::CelltypeRow>>,
+    null: Option<Vec<NullRow>>,
 ) -> anyhow::Result<String> {
     report::report(&mut rows, INTERNALS.min_arm);
-    let (path, q_scope) = write_tables(out, only, record, n_pairs, &rows, celltype.as_deref())?;
+    let (path, q_scope) = write_tables(
+        out,
+        only,
+        record,
+        n_pairs,
+        &rows,
+        celltype.as_deref(),
+        null.as_deref(),
+    )?;
     print_run_summary(&record.manifest, only, &rows, &path, &q_scope);
     Ok(path)
 }
@@ -715,6 +763,7 @@ pub fn merge(shards: &[String], out: &str) -> anyhow::Result<()> {
         count,
         rows,
         celltype,
+        null,
     } = shard::merge_lra(files)?;
     if !record.from_run {
         // a run on data files: the merge's own manifest, as the shards' own
@@ -726,7 +775,7 @@ pub fn merge(shards: &[String], out: &str) -> anyhow::Result<()> {
         record.n_all,
         rows.len()
     );
-    finish(out, &[], &record, record.n_all, rows, celltype)?;
+    finish(out, &[], &record, record.n_all, rows, celltype, null)?;
     // which shards made these tables, for a later call to check
     let text = serde_json::to_string_pretty(&serde_json::json!({
         "run_key": run_key,

@@ -33,8 +33,10 @@ pub fn are_tables(inputs: &[String]) -> bool {
 /// `….lra[.only-TAG].parquet`; an error for any other table (a curve).
 fn link_community_of_table(path: &str) -> anyhow::Result<String> {
     anyhow::ensure!(
-        !path.ends_with(".curve.parquet") && !path.ends_with(".celltype.parquet"),
-        "{path}: a curve or cell-type table, not an effect table"
+        ![".curve.parquet", ".celltype.parquet", ".null.parquet"]
+            .iter()
+            .any(|s| path.ends_with(s)),
+        "{path}: a curve, cell-type or null table, not an effect table"
     );
     if let Some(k) = super::super::link_community_scope::link_community_in_name(path) {
         return Ok(k.to_string());

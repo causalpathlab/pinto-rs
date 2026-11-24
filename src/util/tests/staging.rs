@@ -794,6 +794,7 @@ fn subset(table: &str, pairs: usize) -> LraSubset {
         table: table.into(),
         curve: format!("{table}.curve"),
         celltype: None,
+        null: None,
         options: None,
     }
 }

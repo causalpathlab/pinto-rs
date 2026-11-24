@@ -177,6 +177,7 @@ fn subset(table: &str, pairs: usize) -> LraSubset {
         table: table.into(),
         curve: table.replace(".parquet", ".curve.parquet"),
         celltype: None,
+        null: None,
         options: Some(LraOptions::default()),
     }
 }

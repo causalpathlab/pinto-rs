@@ -185,6 +185,7 @@ impl Fixture {
                 region_jackknife: RegionJackknife::NoRefit,
                 abf_prior_scale: crate::lr_activity::ligand_effect::ABF_PRIOR_SCALE,
                 marginal: None,
+                null_permutations: 0,
                 memory_budget: None,
             },
             data: &self.data,
