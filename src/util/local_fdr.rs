@@ -84,7 +84,7 @@ pub struct TwoGroups {
 }
 
 /// The standard normal density.
-pub fn std_normal_pdf(z: f64) -> f64 {
+fn std_normal_pdf(z: f64) -> f64 {
     (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt()
 }
 

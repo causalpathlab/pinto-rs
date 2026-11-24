@@ -6,16 +6,15 @@ use super::write::{refuse_q_value_table, sim_cols};
 use crate::lr_activity::ligand_effect::simulate::{
     ConfoundShape, ConfounderKind, Scenario, COMPARED,
 };
-use crate::lr_activity::ligand_effect::verdict::Verdict;
 
 /// The effect against one negative control: the effect minus the
-/// control's (log rate ratio), and the local fdr of that difference
-/// (empirical null), so a small lfdr can also mean the effect falls short of
-/// the control; NaN for a control that could not be checked.
+/// control's (log rate ratio), and the two-sided p of that difference, so a
+/// small p can also mean the effect falls short of the control; NaN for a
+/// control that could not be checked.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Control {
     pub over: f64,
-    pub lfdr: f64,
+    pub p: f64,
 }
 
 /// One negative control as the viewer reads it.
@@ -24,9 +23,9 @@ pub struct ControlSpec {
     pub short: &'static str,
     /// Its name for agents.
     pub key: &'static str,
-    /// The columns of the effect minus it, and of that difference's lfdr.
+    /// The columns of the effect minus it, and of that difference's p.
     pub column: &'static str,
-    pub column_lfdr: &'static str,
+    pub column_p: &'static str,
 }
 
 /// The negative controls of [`PairRow::controls`], in its order.
@@ -34,7 +33,7 @@ pub const CONTROLS: [ControlSpec; 1] = [ControlSpec {
     short: "receptor−",
     key: "receptor_negative",
     column: "effect_dr_contrast",
-    column_lfdr: "effect_dr_contrast_lfdr",
+    column_p: "effect_dr_contrast_p",
 }];
 
 /// A pooled row of `{out}.lra.parquet` as the viewer lists it.
@@ -45,15 +44,12 @@ pub struct PairRow {
     /// `ligand` and `receptor` in upper case: what the list searches and
     /// sorts by.
     pub key: (Box<str>, Box<str>),
-    pub verdict: Verdict,
-    pub note: Box<str>,
     pub warnings: Box<str>,
-    /// The headline competent effect (log rate ratio), its SE, p and local
-    /// fdr, and co-expression's local fdr (both under the empirical null).
+    /// The headline competent effect (log rate ratio), its SE and p, and
+    /// co-expression's local fdr (under the null fitted to the bulk).
     pub effect: f64,
     pub effect_dr_se: f64,
     pub effect_dr_p: f64,
-    pub effect_dr_lfdr: f64,
     pub coexpr_lfdr: f64,
     /// The headline as a percent change, `exp(effect) − 1`, with its 95%
     /// interval.
@@ -86,10 +82,8 @@ impl From<&PairRow> for PooledEffect {
         Self {
             ligand: r.ligand.clone(),
             receptor: r.receptor.clone(),
-            verdict: r.verdict,
             effect: r.effect,
             effect_dr_p: r.effect_dr_p,
-            effect_dr_lfdr: r.effect_dr_lfdr,
             pct: r.pct,
             pct_lo: r.pct_lo,
             pct_hi: r.pct_hi,
@@ -98,24 +92,15 @@ impl From<&PairRow> for PooledEffect {
 }
 
 /// The pooled rows of a contact-effect table, in table order, and which
-/// pairs its local fdrs were fitted over (its `q_scope`: [`super::Q_SCOPE_ALL`],
+/// pairs co-expression's local fdr was fitted over (its `q_scope`: [`super::Q_SCOPE_ALL`],
 /// or a `--only` subset's words).
 pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
     use legume_numeric::matrix::parquet::read_table_columns;
-    let strings = [
-        "section",
-        "ligand",
-        "receptor",
-        "verdict",
-        "verdict_note",
-        "warnings",
-        "q_scope",
-    ];
+    let strings = ["section", "ligand", "receptor", "warnings", "q_scope"];
     let numbers = [
         "effect_dr",
         "effect_dr_se",
         "effect_dr_p",
-        "effect_dr_lfdr",
         "coexpr_lfdr",
         "effect_dr_pct",
         "effect_dr_pct_lo",
@@ -131,15 +116,15 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
     let n = numbers.len();
     let numbers: Vec<&str> = numbers
         .into_iter()
-        .chain(CONTROLS.iter().flat_map(|c| [c.column, c.column_lfdr]))
+        .chain(CONTROLS.iter().flat_map(|c| [c.column, c.column_p]))
         .collect();
     refuse_q_value_table(path)?;
     let (s, mut x) = read_table_columns(path, &strings, &numbers)?;
-    let q_scope = s[6]
+    let q_scope = s[4]
         .first()
         .cloned()
         .unwrap_or_else(|| super::Q_SCOPE_ALL.into());
-    // Each control's difference and its lfdr, after tau_top and its weight.
+    // Each control's difference and its p, after tau_top and its weight.
     let controls = x.split_off(n);
     let controls: Vec<&[Vec<f64>]> = controls.chunks(2).collect();
     let (tau_top, tau_top_weight) = (&x[n - 2], &x[n - 1]);
@@ -152,37 +137,30 @@ pub fn read_pair_rows(path: &str) -> anyhow::Result<(Vec<PairRow>, Box<str>)> {
     };
     let rows = (0..s[0].len())
         .filter(|&i| &*s[0][i] == crate::lr_activity::ligand_effect::tissue::ALL_SECTIONS)
-        .map(|i| {
-            Ok(PairRow {
-                ligand: s[1][i].clone(),
-                receptor: s[2][i].clone(),
-                key: (s[1][i].to_uppercase().into(), s[2][i].to_uppercase().into()),
-                verdict: s[3][i]
-                    .parse()
-                    .map_err(|e| anyhow::anyhow!("{path}: {e}"))?,
-                note: s[4][i].clone(),
-                warnings: s[5][i].clone(),
-                effect: x[0][i],
-                effect_dr_se: x[1][i],
-                effect_dr_p: x[2][i],
-                effect_dr_lfdr: x[3][i],
-                coexpr_lfdr: x[4][i],
-                pct: x[5][i],
-                pct_lo: x[6][i],
-                pct_hi: x[7][i],
-                threshold: x[8][i],
-                n_receivers: count(x[9][i]),
-                n_competent: count(x[10][i]),
-                n_exposed: count(x[11][i]),
-                tau_top: tau_top[i],
-                tau_top_weight: tau_top_weight[i],
-                controls: std::array::from_fn(|c| Control {
-                    over: controls[c][0][i],
-                    lfdr: controls[c][1][i],
-                }),
-            })
+        .map(|i| PairRow {
+            ligand: s[1][i].clone(),
+            receptor: s[2][i].clone(),
+            key: (s[1][i].to_uppercase().into(), s[2][i].to_uppercase().into()),
+            warnings: s[3][i].clone(),
+            effect: x[0][i],
+            effect_dr_se: x[1][i],
+            effect_dr_p: x[2][i],
+            coexpr_lfdr: x[3][i],
+            pct: x[4][i],
+            pct_lo: x[5][i],
+            pct_hi: x[6][i],
+            threshold: x[7][i],
+            n_receivers: count(x[8][i]),
+            n_competent: count(x[9][i]),
+            n_exposed: count(x[10][i]),
+            tau_top: tau_top[i],
+            tau_top_weight: tau_top_weight[i],
+            controls: std::array::from_fn(|c| Control {
+                over: controls[c][0][i],
+                p: controls[c][1][i],
+            }),
         })
-        .collect::<anyhow::Result<_>>()?;
+        .collect();
     Ok((rows, q_scope))
 }
 

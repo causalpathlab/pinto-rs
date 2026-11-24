@@ -323,7 +323,7 @@ pub struct SrtLrActivityArgs {
         help = "Permutations of each --marginal-baselines test",
         long_help = "Permutations of each --marginal-baselines permutation test (needs\n\
                      --marginal-baselines). Moran's I and the contact score stop early once\n\
-                     their verdict at 5% is settled; the cell-type test runs all N, since\n\
+                     their side of 5% is settled; the cell-type test runs all N, since\n\
                      its per-type-pair table's p and q need them. Its summary is\n\
                      Bonferroni-corrected over the type pairs, so with m tested type pairs\n\
                      it can reject only when m / (1 + N) < 0.05: many types need more."
@@ -407,7 +407,7 @@ pub struct LraSimulateArgs {
         help = "Plant the effect only on receivers in this --region label",
         long_help = "Plant every scenario's effect only on receivers in this region (a\n\
                      label of the --region table), and read the estimate, its truth and\n\
-                     its verdict on that region's row as well as the pooled one. The\n\
+                     its rejection on that region's row as well as the pooled one. The\n\
                      hidden confounders still act everywhere. Needs --region."
     )]
     pub plant_region: Option<Box<str>>,

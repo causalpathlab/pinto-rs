@@ -5,7 +5,6 @@ use super::effects::ScopeEffects;
 use super::inference::Estimate;
 use super::jackknife::Jackknife;
 use super::tissue::ALL_SECTIONS;
-use super::verdict::Verdict;
 
 /// A statistic's local fdr ([`crate::util::local_fdr`]) under the null
 /// fitted to the bulk of its family (Efron's empirical null) and under the
@@ -64,32 +63,24 @@ pub struct EffectRow {
     pub jackknife: Jackknife,
     // From here on filled in by `report`, once every pair is in.
     /// Two-sided p of the headline (the competent effect) against the t reference with
-    /// clusters − 1 degrees of freedom ([`super::inference::Estimate::p`]), and its local
-    /// fdr among the section's pairs ([`super::report::report`]).
+    /// clusters − 1 degrees of freedom ([`super::inference::Estimate::p`]).
     pub effect_dr_p: f64,
-    pub effect_dr_lfdr: LocalFdr,
     /// One-sided (positive) normal p of the co-expression log odds ratio,
-    /// and its local fdr, signal above the null only.
+    /// and its local fdr among the section's pairs, signal above the null only
+    /// ([`super::report::report`]).
     pub coexpr_p: f64,
     pub coexpr_lfdr: LocalFdr,
-    /// Local fdr of the incompetent effect, a control, two-sided.
-    pub effect_dr_incompetent_lfdr: LocalFdr,
-    /// Local fdr of the contrast between the effects in competent and in
-    /// receptor-negative receivers.
-    pub effect_dr_contrast_lfdr: LocalFdr,
     /// Pairs in the section sharing this pair's ligand.
     pub n_pairs_same_ligand: usize,
-    pub verdict: Verdict,
-    /// Why the verdict is what it is beyond the local fdrs: failed controls,
-    /// confounding, why a pair is not estimable. Semicolon separated.
+    /// Why a pair is not estimable, or that its SE was not widened by the
+    /// tile jackknife.
     pub warnings: String,
 }
 
 impl EffectRow {
-    /// A row holding what [`super::report::report`] reads for its verdict, the
-    /// rest blank: the estimands, co-expression and the exposure's identity
-    /// share. `lra-simulate` judges its runs by the rule `lra`
-    /// uses through this.
+    /// A row holding what [`super::report::report_row`] reads, the rest
+    /// blank: the estimands, co-expression and the exposure's identity share.
+    /// `lra simulate` reports its runs through this.
     pub fn pending(
         effects: ScopeEffects,
         (coexpr_log_or, coexpr_se): (f64, f64),
@@ -116,13 +107,9 @@ impl EffectRow {
             marginal: None,
             jackknife: Jackknife::NONE,
             effect_dr_p: f64::NAN,
-            effect_dr_lfdr: LocalFdr::NAN,
             coexpr_p: f64::NAN,
             coexpr_lfdr: LocalFdr::NAN,
-            effect_dr_incompetent_lfdr: LocalFdr::NAN,
-            effect_dr_contrast_lfdr: LocalFdr::NAN,
             n_pairs_same_ligand: 0,
-            verdict: Verdict::InsufficientData,
             warnings: String::new(),
         }
     }

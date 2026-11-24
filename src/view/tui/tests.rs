@@ -23,7 +23,7 @@ fn an_error_popup_wraps_its_message_to_fit() {
 
 /// The lra layer on screen: `I` opens it, the pair list fills the panel,
 /// a pair picked is drawn in its classes and its curve goes under the
-/// map, and the list filters by verdict and genes.
+/// map, and the list searches by genes.
 #[test]
 fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     use super::super::tests::lra::{lra_run, receivers, WARNING};
@@ -54,7 +54,7 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     let all = lines.join("\n");
     assert!(all.contains("pairs full table · 3"), "{all}");
     assert!(all.contains("T 1/2"), "{all}");
-    assert!(all.contains("L1:R1") && all.contains("supported"), "{all}");
+    assert!(all.contains("L1:R1") && all.contains("0.010"), "{all}");
     assert!(all.contains("I or Esc leave"), "{all}");
     // The list is clickable, a row per pair.
     let (_, picks) = app.panel(48);
@@ -63,21 +63,17 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
         .filter(|(_, p)| matches!(p, Pick::Pair(_)))
         .count();
     assert_eq!(pairs, 3);
-    // Its columns line up whatever the verdict: each verdict starts its
-    // column's width from the row's end, after a space.
-    use super::lra::VERDICT_W;
+    // Its columns line up: the change and the p, each 7 wide after a space,
+    // end every row.
     let (lines, _) = app.panel(48);
     for (at, _) in picks.iter().filter(|(_, p)| matches!(p, Pick::Pair(_))) {
         let row: Vec<char> = lines[*at].to_string().chars().collect();
-        let start = row.len() - VERDICT_W;
-        assert!(
-            row[start - 1] == ' ' && row[start].is_alphabetic(),
-            "{row:?}"
-        );
+        let n = row.len();
+        assert!(row[n - 16] == ' ' && row[n - 8] == ' ', "{row:?}");
     }
     assert!(app.lra_drawn().is_none(), "nothing picked yet");
 
-    // ↓ picks the first pair, by q; it is drawn in its classes.
+    // ↓ picks the first pair, by p; it is drawn in its classes.
     app.lra.as_mut().unwrap().receivers = Some(receivers(&base, contacts));
     assert!(app.lra_key(key(KeyCode::Down), None).unwrap());
     // Drawn with the map, not by the key.
@@ -89,7 +85,7 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
         all.contains("▸ L1:R1") || all.contains("▸L1:R1") || all.contains("▸ L1"),
         "{all}"
     );
-    assert!(all.contains("L1 → R1  supported"), "{all}");
+    assert!(all.contains("L1 → R1"), "{all}");
     assert!(all.contains("+25% (95% CI +20% to +30%)"), "{all}");
     assert!(all.contains("sender (ligand+)"), "{all}");
     // Every line fits the panel, its words whole: the pair's reasons read
@@ -101,11 +97,10 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     let flat = all.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(flat.contains(WARNING), "{all}");
     assert!(flat.contains("weighs τ 2 most (80%)"), "{all}");
-    // The effect against the control, signed: a small lfdr can mean it
+    // The effect against the control, signed: a small p can mean it
     // falls short of it, as here of the receptor-negative receivers.
     assert!(
-        flat.contains("effect − control: receptor− -4.9% lfdr 0.010")
-            && !flat.contains("background"),
+        flat.contains("effect − control: receptor− -4.9% p 0.010") && !flat.contains("background"),
         "{all}"
     );
     let (level, style) = app.drawn();
@@ -130,14 +125,7 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     let tall = app.with_curve(frame);
     assert!(tall.h > h && tall.rgba.len() == tall.w * tall.h * 4);
 
-    // v: one verdict at a time; / genes, typed and kept.
-    app.lra_key(key(KeyCode::Char('v')), None).unwrap();
-    let all = text(&app).join("\n");
-    assert!(all.contains("verdict supported (1)"), "{all}");
-    app.lra_key(key(KeyCode::Char('v')), None).unwrap();
-    app.lra_key(key(KeyCode::Char('V')), None).unwrap();
-    app.lra_key(key(KeyCode::Char('V')), None).unwrap();
-    assert_eq!(app.lra.as_ref().unwrap().filter().verdict, None);
+    // / genes, typed and kept.
     app.lra_key(key(KeyCode::Char('/')), None).unwrap();
     for c in "g0".chars() {
         app.lra_key(key(KeyCode::Char(c)), None).unwrap();
@@ -150,7 +138,7 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     assert!(app.lra.as_ref().unwrap().marked.contains("L1:G0"));
     assert!(text(&app).join("\n").contains("*L1:G0"));
 
-    // T: the subset table, its lfdr fitted within the subset.
+    // T: the subset table, co-expression's lfdr fitted within the subset.
     app.lra_key(key(KeyCode::Char('/')), None).unwrap();
     app.lra_key(key(KeyCode::Esc), None).unwrap();
     app.lra_key(key(KeyCode::Char('T')), None).unwrap();

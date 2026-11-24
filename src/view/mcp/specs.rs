@@ -92,22 +92,22 @@ pub(super) fn specs() -> Vec<ToolSpec> {
         spec(
             "view_lra",
             "The run's ligand-receptor tables (pinto lra: the full table and any --only \
-             subsets) and their pooled pairs: verdict counts and a list filtered by verdict \
-             and gene, sorted by lfdr, effect or name, each with its change (percent, exp(effect) \
-             - 1, with 95% CI) and local fdr. With pair, returns that pair's row (verdict, note, \
-             threshold, receivers) and view_map draws it from then on: senders (ligand+), \
+             subsets) and their pooled pairs: how many have an estimate, and a list searched by \
+             gene, sorted by p, effect or name, each with its change (percent, exp(effect) - 1, \
+             with 95% CI) and p. With pair, returns that pair's row (effect, SE, p, the effect \
+             minus the receptor-negative control with its p, co-expression's local fdr, \
+             warnings, threshold, receivers) and view_map draws it from then on: senders (ligand+), \
              receivers exposed or not (contact exposure above the table's threshold) and \
              receptor-competent or not, as lra computed them (show: exposure draws the \
-             exposure itself). Arguments stay set until changed. A subset's lfdr is fitted \
-             within the subset only (q_scope). view_export curve: true writes the pair's \
+             exposure itself). Arguments stay set until changed. lra judges nothing. A subset's \
+             co-expression lfdr is fitted within the subset only (q_scope). view_export curve: true writes the pair's \
              threshold-response curve.",
             json!({
                 "type": "object",
                 "properties": {
                     "table": {"type": "string", "description": "full, a subset by its --only list (L1,L2), or a table's path [default: the full table]"},
-                    "verdict": {"type": "string", "description": "List only this verdict (supported, effect_without_coexpression, colocation_only, no_evidence, control_failed, celltype_inseparable, insufficient_data); \"\" lists all"},
                     "search": {"type": "string", "description": "Genes: each word must be in the ligand's or receptor's name; \"\" for all"},
-                    "sort": {"enum": ["lfdr", "effect", "name"], "description": "Order of the list [default: lfdr]"},
+                    "sort": {"enum": ["p", "effect", "name"], "description": "Order of the list [default: p]"},
                     "limit": {"type": "integer", "minimum": 0, "description": "Pairs listed, this call only [default: 20]"},
                     "pair": {"type": "string", "description": "LIGAND:RECEPTOR to select and draw on the map; \"\" draws groups again"},
                     "show": {"enum": ["classes", "exposure"], "description": "What the pair's map shows [default: classes]"},

@@ -341,10 +341,9 @@ takes seconds. A subset never writes over the full table: it goes to
 with `--marginal-baselines`), `<tag>` the list
 itself when short (`l1+l2`) or a short hash of it, with or without
 `-o`, and the manifest records it apart, under `outputs.lra.subsets`, the
-full table staying `outputs.lra.table`. Its pairs are judged within the
-subset only (a short list tests its p-values by Bonferroni instead of a
-local fdr): the `q_scope` column (`all pairs` in a full table) and each
-row's `warnings` say so.
+full table staying `outputs.lra.table`. Co-expression's local fdr is fitted
+within the subset only (a short list has none): the `q_scope` column (`all
+pairs` in a full table) says so.
 
 `--marginal-baselines` also scores each pair on the co-expression statistics
 `lra-simulate` compares the estimate with, over the whole tissue: cell-type
@@ -358,7 +357,7 @@ co-expression score `Σ L_i R_j` (NICHES, Raredon 2022; COMMOT, Cang 2023).
 Each is one-sided, its null the cell-type labels (or, for the contact
 statistics, the ligand within each section) permuted up to
 `--marginal-permutations` times (default 2000; Moran's I and the contact
-score stop early once their verdict at 5% is settled, while the cell-type
+score stop early once their side of 5% is settled, while the cell-type
 test runs every permutation, since its per-type-pair p and q need them). The cell types are the run's own (`--cell-types` or the
 lupin round), `unassigned` permuted with the rest but never a tested type;
 a run with none falls back to the identity bins coarsened to at most 8 types,
@@ -380,7 +379,7 @@ depth-normalized counts), `ligand_detected_sender` and
 and `labels`. None of these adjusts for confounding, unlike the estimate: a
 ligand made by one cell type and a receptor carried by another score as an
 interaction whatever the receivers do, which is what `lra-simulate` shows
-them doing. They are for comparison and enter no verdict. The flag is off by
+them doing. They are for comparison. The flag is off by
 default, as the permutations cost more than the estimate on a full reference.
 
 Two other methods test co-expression within link communities (they need an
@@ -390,9 +389,10 @@ lc run and `--lr-pairs`): `--method coexpression-test` (permutation test,
 
 Reading `{out}.lra.parquet`: one row per pair and section (`all` is the
 pooled row). `effect_dr` is the headline, a log-rate change of the
-response program (`exp(x) - 1` is the percent change); `verdict` sums up
-the evidence and `verdict_note` says why in words. For comparison, and in no
-verdict: `marginal_cor` (the correlation of response and contact ligand),
+response program (`exp(x) - 1` is the percent change), with `_se`, `_df`
+and `_p`. lra judges nothing: every statistic is reported, and the reader
+decides; `warnings` says why a pair has no estimate. For comparison:
+`marginal_cor` (the correlation of response and contact ligand),
 `effect_unadj` (the mean response of exposed competent receivers minus that
 of unexposed ones, every receiver weighted 1 and nothing adjusted for), each with `_se`; `effect_ipw`
 (overlap weights alone) with `_se`, `_lo` and `_hi`, an interval no control
@@ -413,7 +413,7 @@ Since 0.17.5 this jackknife SE is all of it: the between-choice term of
 Rubin's rules and the spread between thresholds that 0.17.4 added are not,
 since every replicate recomputes every choice and threshold. The headline's
 contrasts (`effect_dr_contrast`, `effect_dr_vs_rest`) take the same
-jackknife, so the verdict compares like with like.
+jackknife, so they compare like with like.
 `effect_outcome`'s replicates also re-solve its outcome model without the
 tile (the ridge on its fold's Gram less the tile's, no refit), where its
 sampling error lives, and that leave-out also gives it its SE at each
@@ -421,19 +421,9 @@ threshold, which weighs its thresholds in the average. The thresholds are weighe
 approximate Bayes factors whose prior SD is `--abf-prior-scale` (default 10)
 times the upper-median SE over the thresholds: smaller = smoother weights
 across thresholds. `pinto view` shows the pairs and draws
-each on the tissue (see `view`, `I`):
+each on the tissue (see `view`, `I`).
 
-| verdict | meaning |
-|---|---|
-| `supported` | receivers next to ligand-carrying cells change their response program, ligand and receptor are co-expressed across contacts, and the effect exceeds every negative control |
-| `effect_without_coexpression` | receivers respond to neighbouring ligand, but ligand and receptor are not co-expressed across contacts beyond chance |
-| `colocation_only` | ligand and receptor sit together across contacts, but receivers show no change in their response program |
-| `no_evidence` | neither a response nor co-expression at this false discovery rate |
-| `control_failed` | an effect appeared, but it does not exceed the negative control (receivers without the receptor), or that could not be checked: likely confounding |
-| `celltype_inseparable` | being exposed to the ligand is nearly the same as having a neighbour of one cell type, so the ligand cannot be told apart from that cell type |
-| `insufficient_data` | too few exposed or unexposed receptor-carrying receivers, or too little overlap between them, to estimate an effect |
-
-A verdict is deliberately conservative. A pair has an estimate only if its
+A pair has an estimate only if its
 receptor-competent receivers fill both arms at the middle competence threshold.
 The threshold on neighbouring ligand is not chosen: each pair is estimated at
 any detected ligand and at the quartiles of its positive doses, and those
@@ -451,23 +441,22 @@ Every test reads its t reference on the effective number of variance tiles,
 row (`effect_dr_df` is that count less one). A row whose signal sits in
 a few of many tiles, as a region of one donor does, is tested on those few.
 
-Across pairs, each statistic (the effect, co-expression, the contrast with
-receptor-negative receivers, and the effect in them) gets Efron's local false
-discovery rate within its section: the probability that a statistic there
-is null, from a two-group model of the family's normal scores. Two columns
-each: `_lfdr` under the null fitted to the bulk of the family (the empirical
-null, which absorbs what moves every pair alike, such as a residual
-confounder or correlation between pairs) and `_lfdr_theoretical_null` under
-N(0, 1). Nothing is corrected by Benjamini–Hochberg, whose theoretical null
-and dependence condition these tables do not meet; the verdict reads the
-empirical-null lfdr at 0.2. A family of fewer than 100 estimable pairs (a
-short `--only` list, a small link community) has no local fdr, and its
-p-values are tested by Bonferroni at 0.05 instead.
+The negative control is the effect in receptor-negative receivers
+(`effect_dr_incompetent`, with `_se`, `_df` and `_p`) and the contrast
+between the two (`effect_dr_contrast`, likewise): an effect that does not
+exceed the control is not specific to the receptor. A hidden field can move
+the control too, so a control that is itself significant does not rule out
+a larger effect.
 
-A significant effect then has to exceed the negative control, the same way:
-the effect in receptor-negative receivers (`effect_dr_contrast_lfdr`). A
-hidden field can move the control too, so a control that is itself
-significant does not rule out a larger effect; it is named in `warnings`. A control that could not run does not pass.
+Co-expression, a baseline, also gets Efron's local false discovery rate
+within its section: the probability that a pair there is not co-expressed
+beyond the rest, from a two-group model of the section's scores.
+`coexpr_lfdr` is under the null fitted to the bulk of the section (the
+empirical null, which absorbs the spatial autocorrelation that moves every
+pair alike) and `coexpr_lfdr_theoretical_null` under N(0, 1). A section of
+fewer than 100 pairs (a short `--only` list, a small link community) has no
+local fdr. Nothing is corrected by Benjamini–Hochberg, whose theoretical
+null and dependence condition these tables do not meet.
 
 ### `lra-simulate`: power and calibration check
 
@@ -497,7 +486,7 @@ pinto lra simulate --from out/run1.pinto.json --region region.tsv --plant-region
 `--lr-pairs` and `--targets` add pairs and programs as for `pinto lra` (for
 gene names no reference knows, such as a simulation's). `--plant-region`
 plants every effect in one `--region` label only, and reads the estimate, its
-truth and its verdict on that region's row beside the pooled one (`region_*`
+truth and its rejection on that region's row beside the pooled one (`region_*`
 columns); the summary and the table (`planted_region`) name the region.
 
 **One scenario per call.** A sweep over scenarios runs one call per point
@@ -1114,14 +1103,12 @@ pinto view out --round out.final.a1.r1.lupin.json --show types --png types.png
 
 `I` opens the run's lra table (the full table, or with `T` each `--only`
 subset in turn) as a list in the side panel: one line per pair with its
-change, local fdr and verdict, sorted by lfdr (`o`: by effect, by name), one verdict at
-a time with `v`/`V` (supported, effect_without_coexpression,
-colocation_only, no_evidence, control_failed, celltype_inseparable,
-insufficient_data, or all), and `/` keeps the pairs naming a gene. `↑`/`↓` (or a click) pick a
+change and p, sorted by p (`o`: by effect, by name), and `/` keeps the
+pairs naming a gene. `↑`/`↓` (or a click) pick a
 pair: the panel gives its effect as a percent change (`exp(x) - 1`) with its
-95% CI, lfdr, coexpression lfdr, the threshold its average weighs most, counts,
-the effect minus the control with its lfdr, and its warnings (else the verdict's note; a subset's lfdr marked
-subset-fitted), and the map draws it, computed as lra computes it:
+95% CI, p, coexpression lfdr (marked subset-fitted in a subset), the
+threshold its average weighs most, counts, the effect minus the control with
+its p, and its warnings, and the map draws it, computed as lra computes it:
 senders (cells carrying the ligand), and receivers exposed or not (their
 contact exposure to the ligand above the table's threshold) and
 receptor-competent or not (their identity bin detects the receptor). `e`
@@ -1132,8 +1119,8 @@ across it, and the threshold that average weighs most ringed) under the map. The
 first pair drawn reads the run's receivers once (a pass over its data); each
 pair after that reads two genes.
 
-Space or `m` marks pairs, and `M` marks all the filter shows (a verdict, or
-one gene's pairs after `/`); `L` runs `pinto lra --only` on the marked ones,
+Space or `m` marks pairs, and `M` marks all the list shows (one gene's
+pairs after `/`); `L` runs `pinto lra --only` on the marked ones,
 or on the pair under the cursor when none is marked, in the background beside
 the run (`{prefix}.lra.only-<tag>.parquet`, its script
 `{prefix}.lra.only-<tag>.cmd.sh`). The panel shows its progress bar, `X` stops
@@ -1329,8 +1316,8 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 | `run_predict` | `pinto apply predict` as a recorded job: on an lc model, held-out pairs scored by count thinning or `ablate-features`, beside the training null, a pooled K=1 profile and the ceiling; returns the manifest's `holdout` block when run to its end |
 | `run_region` | the cells of a run inside a polygon (world coordinates as `view_map` shows them, or a GeoJSON file in section coordinates) written as `{out}.cells.txt` for `run_fit`'s `mask-cells` |
 | `run_compare` | `pinto compare` on two runs (prefix or `.pinto.json`): ARI, NMI, a Hungarian community matching with each pair's Jaccard, and A's communities that vanish, split or merge in B (partners hold ≥ `tau` of a community's cells); writes `{out}.compare.json` and `{out}.contingency.parquet`. With `paired: true`, two models' `run_predict` scores on the same held-out cells, tested over donors (`{out}.paired.json`) |
-| `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, `shard` (`I/N`: only shard I of the pairs, to `{out}.lra.shard-I-of-N.cbor`, no table; each shard its own job, e.g. a Slurm array task, then `run_lra_merge`), and for the co-expression methods `n_permutations` and `min_gene_count`, and for the contact effect `marginal_baselines` (`--marginal-baselines`, also writing `{out}.lra.celltype.parquet`, slot `lra.celltype`) and `marginal_permutations` (only with `marginal_baselines`); writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, judged within the subset) and replies with the verdict counts, the pairs whose effect survived the controls (percent change with its 95% CI, lfdr) and, when the tissue has no power check yet, `run_lra_simulate` as the next call (with the same `lr_pairs`, `targets` and `species`); called again on a finished `out`, it reads the tables back, and refuses a call whose options differ from those the manifest records for them |
-| `run_lra_merge` | `pinto lra merge` as a recorded job: `shards` (every `{out}.lra.shard-I-of-N.cbor` of one `run_lra` run with `shard`, in any order) and `out`; writes the tables a run without `shard` writes, its local fdrs over every pair, recorded in the run's manifest, and replies as `run_lra` does; called again on a finished `out`, it reads the tables back |
+| `run_lra` | `pinto lra --from <run>` as a recorded job, or `pinto lra` on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `method` (contact-effect, coexpression-test, coexpression-scores), `out`, `lr_pairs`, `targets`, `species`, `seed`, `only`, `shard` (`I/N`: only shard I of the pairs, to `{out}.lra.shard-I-of-N.cbor`, no table; each shard its own job, e.g. a Slurm array task, then `run_lra_merge`), and for the co-expression methods `n_permutations` and `min_gene_count`, and for the contact effect `marginal_baselines` (`--marginal-baselines`, also writing `{out}.lra.celltype.parquet`, slot `lra.celltype`) and `marginal_permutations` (only with `marginal_baselines`); writes `{out}.lra.parquet` and `{out}.lra.curve.parquet` (slots `lra.table` and `lra.curve` in the run's manifest; with `only`, `{out}.lra.only-<tag>.parquet` under `lra.subsets`, co-expression's lfdr fitted within the subset) and replies with how many pairs have an estimate, those with the smallest p (percent change with its 95% CI, p) and, when the tissue has no power check yet, `run_lra_simulate` as the next call (with the same `lr_pairs`, `targets` and `species`); called again on a finished `out`, it reads the tables back, and refuses a call whose options differ from those the manifest records for them |
+| `run_lra_merge` | `pinto lra merge` as a recorded job: `shards` (every `{out}.lra.shard-I-of-N.cbor` of one `run_lra` run with `shard`, in any order) and `out`; writes the tables a run without `shard` writes, its p-values and co-expression's local fdr over every pair, recorded in the run's manifest, and replies as `run_lra` does; called again on a finished `out`, it reads the tables back |
 | `run_lra_simulate` | `pinto lra simulate --from <run>` as a recorded job, or on `data_files` with `coord_files` (`batch_files`, `knn_spatial`): `out`, `species`, `seed`; writes `{out}.lra-simulate.parquet` (slot `lra.simulate`) and replies with each method's type I error and power per scenario, the estimable shares and the means over the confounded nulls and planted effects. `one`, `set`, `pairs` and `null_pairs` run one scenario instead (`--one`, `--set`, `--pairs`, `--null-pairs`): the table with its `planted` label and p columns, then `{out}.lra-simulate.json`, nothing recorded in the manifest |
 | `run_simulate` | `pinto sim new` as a recorded job: `scenario`, `set` (`key=value`, any parameter), `coords` with `coord_column_names`, `out`; the settings and coordinate files are checked before it starts, an existing `out` is refused, and the reply names the truth run `<out>/truth/truth.pinto.json` for `view_open` and `run_sim_score_by_set`, and lists the sections to fit as `fit.data` with `fit.coords` and the flags to read them as `fit.flags` ; it also gives the run's variance `shares` and a `shares_note` that spells them out (noise as the remainder, any share set but off) for the agent to relay |
 | `run_sim_score_by_set` | `pinto sim score-by-set` in the call: `truth` (the simulation's truth run or folder), `labels` (runs or label tables), `level`, `label_column`; replies with the two tests as a table, one row per labelling and donor-specific domain, and as JSON; a labelling that cannot be scored is listed under `failed` and the rest are scored |
@@ -1340,7 +1327,7 @@ flag's short help, and a flag hidden from `--help` is in no tool's schema nor in
 | `view_map` | draws the map as a PNG with its state and legend; level, layer, focus, gene (source, clip), round and `show`, theme, edges, point size, box / fit / batch / center / zoom, width; settings stay until changed, and a call that fails changes nothing |
 | `view_markers` | a group's top features, by fold over the other groups |
 | `view_cell` | the cell under a pixel of the last map, at a world point, or by name: batch, group, strongest propensities, entropy |
-| `view_lra` | the run's lra tables (the full one and `--only` subsets, `table`) and their pairs: verdict counts and a list filtered by `verdict` and `search` (genes), `sort`ed by lfdr, effect or name, each with its percent change and local fdr; `pair` returns that pair's row and makes `view_map` draw it (senders, receivers exposed or not and receptor-competent or not; `show: exposure` the exposure itself) until a group layer, gene or `pair: ""` is asked for; settings stay until changed |
+| `view_lra` | the run's lra tables (the full one and `--only` subsets, `table`) and their pairs: how many have an estimate and a list searched by `search` (genes), `sort`ed by p, effect or name, each with its percent change and p; `pair` returns that pair's row and makes `view_map` draw it (senders, receivers exposed or not and receptor-competent or not; `show: exposure` the exposure itself) until a group layer, gene or `pair: ""` is asked for; settings stay until changed |
 | `view_export` | writes the view as a PNG and/or a PDF figure (only `.png`/`.pdf`, replacing one only with `overwrite`), by running the `pinto view` command it returns; with `curve: true`, the selected lra pair's threshold-response curve |
 | `notebook` | (from legume-mcp) an entry in the day's lab notebook |
 | `job_status`, `job_wait`, `job_cancel` | (from legume-mcp) follow a `run_fit` (or `run_predict`, `run_lra`, `run_lra_simulate`, `run_lra_merge`, `run_simulate`, `run_sim_baseline`) in the background, or stop it |

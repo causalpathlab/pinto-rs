@@ -4,7 +4,6 @@ use super::scenario::Scenario;
 use crate::lr_activity::ligand_effect::baselines::{self, Baselines};
 use crate::lr_activity::ligand_effect::inference::Estimate;
 use crate::lr_activity::ligand_effect::jackknife::Jackknife;
-use crate::lr_activity::ligand_effect::verdict::Verdict;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct SimRow {
@@ -32,10 +31,6 @@ pub struct SimRow {
     pub steps: [Estimate; 3],
     /// The competent effect minus the receptor-negative one.
     pub contrast: Estimate,
-    /// The verdict `lra` would give this run tested alone, its p-values at
-    /// the small-family level (a family of one has no local fdr): more
-    /// lenient than a run judged among many pairs by their local fdrs.
-    pub verdict: Verdict,
     /// Share of competent receivers whose seen exposure is not their true
     /// exposure.
     pub misclassified: f64,
@@ -53,7 +48,7 @@ pub struct SimRow {
     pub field_sha256: Option<Box<str>>,
 }
 
-/// The estimate, its truths and its verdict on one region's row: the same
+/// The estimate and its truths on one region's row: the same
 /// fit as the pooled row, summed over the region's receivers.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub struct RegionRead {
@@ -64,7 +59,6 @@ pub struct RegionRead {
     /// ([`crate::lr_activity::ligand_effect::effects::ScopeEffects::versus_rest`]);
     /// with the effect planted in the region alone, its truth is the region's.
     pub versus_rest: Estimate,
-    pub verdict: Verdict,
     /// The jackknife ratios the region row's SEs were widened by.
     pub jackknife: Jackknife,
 }

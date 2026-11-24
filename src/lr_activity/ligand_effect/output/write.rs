@@ -7,14 +7,14 @@ use crate::lr_activity::ligand_effect::simulate::{RegionRead, SimRow, COMPARED};
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 
 /// The `q_scope` of a table of every pair. The column (named when tables
-/// carried BH q-values) names the family of pairs judged together: the one
-/// each local fdr is fitted over, or Bonferroni corrects over when too small.
+/// carried BH q-values) names the pairs co-expression's local fdr is fitted
+/// over.
 pub const Q_SCOPE_ALL: &str = "all pairs";
 
-/// Refused: a contact-effect table made before local fdrs replaced BH
-/// q-values (it has `effect_dr_q`, or `effect_q` before 0.17.5), whose q is
-/// not an lfdr and is not read or collected as one. Only the schema is read;
-/// the caller names the table.
+/// Refused: a contact-effect table made before 0.17.16, with BH q-values
+/// and verdicts (it has `effect_dr_q`, or `effect_q` before 0.17.5): its q
+/// is not an lfdr, and it lacks the p-values the viewer
+/// reads. Only the schema is read; the caller names the table.
 pub fn refuse_q_value_table(path: &str) -> anyhow::Result<()> {
     let names = legume_numeric::matrix::parquet::peek_parquet_field_names(path)?;
     let has_q = names
@@ -22,16 +22,15 @@ pub fn refuse_q_value_table(path: &str) -> anyhow::Result<()> {
         .any(|n| &**n == "effect_dr_q" || &**n == "effect_q");
     anyhow::ensure!(
         !has_q,
-        "made by a pinto lra before 0.17.16, which reported BH q-values; rerun \
-         pinto lra (to a new --out, or with this table removed) to get its local fdrs"
+        "made by a pinto lra before 0.17.16, which reported BH q-values and \
+         verdicts; rerun pinto lra (to a new --out, or with this table removed)"
     );
     Ok(())
 }
 
 /// `{out}.lra.parquet`: one row per pair and section (`all` for the pooled
-/// row). `verdict` is a [`super::super::verdict::Verdict`] code, `verdict_note`
-/// its words; the headline's [`super::super::rows::Moments`] are computed here.
-/// `q_scope` says which pairs the local fdrs were fitted over:
+/// row). The headline's [`super::super::rows::Moments`] are computed here.
+/// `q_scope` says which pairs co-expression's local fdr was fitted over:
 /// [`Q_SCOPE_ALL`], or a `--only` subset. With `marginal`
 /// (`--marginal-baselines`) the co-expression baselines follow, before
 /// `q_scope`: `celltype_score`, `celltype_p`, `celltype_tested`, `moran_i`,
@@ -72,7 +71,6 @@ pub fn write_effects(
         .est("effect_dr", |(r, _)| r.effects.competent)
         .f("effect_dr_df", |(r, _)| r.effects.competent.df)
         .f("effect_dr_p", |(r, _)| r.effect_dr_p)
-        .lfdr("effect_dr", |(r, _)| r.effect_dr_lfdr)
         .f("coexpr_p", |(r, _)| r.coexpr_p)
         .lfdr("coexpr", |(r, _)| r.coexpr_lfdr)
         .i("n_pairs_same_ligand", |(r, _)| r.n_pairs_same_ligand)
@@ -81,10 +79,15 @@ pub fn write_effects(
         .est("effect_dr_identity", |(r, _)| r.effects.steps[2])
         .est("effect_dr_nospill", |(r, _)| r.effects.nospill)
         .est("effect_dr_incompetent", |(r, _)| r.effects.incompetent)
-        .lfdr("effect_dr_incompetent", |(r, _)| {
-            r.effect_dr_incompetent_lfdr
+        .f("effect_dr_incompetent_df", |(r, _)| {
+            r.effects.incompetent.df
+        })
+        .f("effect_dr_incompetent_p", |(r, _)| {
+            r.effects.incompetent.p()
         })
         .est("effect_dr_contrast", |(r, _)| r.effects.effect)
+        .f("effect_dr_contrast_df", |(r, _)| r.effects.effect.df)
+        .f("effect_dr_contrast_p", |(r, _)| r.effects.effect.p())
         .est("effect_dr_vs_rest", |(r, _)| r.effects.versus_rest)
         .f("effect_dr_vs_rest_df", |(r, _)| r.effects.versus_rest.df)
         .f("effect_dr_vs_rest_p", |(r, _)| r.effects.versus_rest.p())
@@ -94,15 +97,12 @@ pub fn write_effects(
         .f("effect_dr_log10_bf", |(r, _)| r.effects.abf.log10_bf)
         .f("tau_top", |(r, _)| r.effects.abf.top_tau)
         .f("tau_top_weight", |(r, _)| r.effects.abf.top_weight)
-        .lfdr("effect_dr_contrast", |(r, _)| r.effect_dr_contrast_lfdr)
         .f("mean_overlap", |(r, _)| r.effects.competent.mean_h)
         .f("overlap_ess", |(r, _)| r.effects.competent.ess)
         .f("near_determined_share", |(r, _)| r.effects.near_determined)
         .f("exposure_eta2", |(r, _)| r.exposure_eta2)
         .i("n_competent_bins", |(r, _)| r.n_competent_bins)
         .i("n_incompetent_bins", |(r, _)| r.n_incompetent_bins)
-        .s("verdict", |(r, _)| r.verdict.code())
-        .s("verdict_note", |(r, _)| r.verdict.note())
         .s("warnings", |(r, _)| &r.warnings)
         .f("effect_dr_lo", |(_, m)| m.lo)
         .f("effect_dr_hi", |(_, m)| m.hi)
@@ -343,8 +343,6 @@ fn sim_columns<'r>(rows: &'r [SimRow], planted: Option<&'r str>) -> Columns<'r, 
         .i(DOSE_RESPONSE, |r| r.scenario.dose_response as usize)
         .f(DOSE_MIDPOINT, |r| r.scenario.dose_midpoint)
         .i(DOSE_ORDER, |r| r.scenario.dose_order as usize)
-        .s("verdict", |r| r.verdict.code())
-        .i("survived", |r| r.verdict.survived() as usize)
         .f("mean_overlap", |r| r.estimate.mean_h)
         .f("misclassified", |r| r.misclassified)
         .i("celltype_tested", |r| r.baselines.celltype_tested);
@@ -368,9 +366,6 @@ fn sim_columns<'r>(rows: &'r [SimRow], planted: Option<&'r str>) -> Columns<'r, 
         .f("region_estimate", g(|x| x.estimate.theta))
         .f("region_se", g(|x| x.estimate.se))
         .f("region_df", g(|x| x.estimate.df))
-        .s("region_verdict", |r| {
-            r.region.as_ref().map_or("", |x| x.verdict.code())
-        })
         .f(
             "region_reject",
             g(|x| f64::from(u8::from(x.estimate.rejects()))),

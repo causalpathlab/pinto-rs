@@ -9,12 +9,12 @@
 //! comes out of its shard as it would of the whole run. A shard writes
 //! no table and records nothing in the manifest: it writes
 //! `{out}.lra.shard-I-of-N.cbor` ([`super::link_community_scope::shard_path`]), its pairs' rows before the
-//! local fdrs and verdicts.
+//! p-values and co-expression's local fdr.
 //!
 //! `pinto lra merge` reads every shard of a run, checks they are its `N`
 //! shards (one run key, each `I` once, every pair once), and writes the
-//! tables a run without `--shard` writes, its local fdrs and verdicts over
-//! every pair, recording them in the run's manifest.
+//! tables a run without `--shard` writes, its p-values and co-expression's
+//! local fdr over every pair, recording them in the run's manifest.
 
 use super::baselines::TypeSource;
 use super::output::CelltypeRow;

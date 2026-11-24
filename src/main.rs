@@ -1031,10 +1031,10 @@ enum LraSub {
                       ({out}.lra.shard-I-of-N.cbor, given in any order), check they are its\n\
                       N shards (the same settings and pairs, each shard once, every pair\n\
                       once), and write the tables a run without --shard writes: the\n\
-                      local fdrs and verdicts over every pair, recorded in the run's manifest\n\
-                      (the --from run's, else {out}.pinto.json). Given effect tables\n\
-                      instead, collects the marginal and --link-community tables into\n\
-                      {out}.lra.by-link-community.parquet."
+                      p-values and co-expression's local fdr over every pair, recorded in\n\
+                      the run's manifest (the --from run's, else {out}.pinto.json). Given\n\
+                      effect tables instead, collects the marginal and --link-community\n\
+                      tables into {out}.lra.by-link-community.parquet."
     )]
     Merge(Box<lr_activity::args::LraMergeArgs>),
     #[command(

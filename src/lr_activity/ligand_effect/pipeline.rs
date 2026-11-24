@@ -678,7 +678,7 @@ fn finish(
     mut rows: Vec<rows::EffectRow>,
     celltype: Option<Vec<output::CelltypeRow>>,
 ) -> anyhow::Result<String> {
-    report::report(&mut rows, &report::ReportOpts::default());
+    report::report(&mut rows, INTERNALS.min_arm);
     let (path, q_scope) = write_tables(out, only, record, n_pairs, &rows, celltype.as_deref())?;
     print_run_summary(&record.manifest, only, &rows, &path, &q_scope);
     Ok(path)

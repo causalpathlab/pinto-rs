@@ -17,7 +17,6 @@ use crate::lr_activity::ligand_effect::output::{
 };
 use crate::lr_activity::ligand_effect::shard::{self, Shard};
 use crate::lr_activity::ligand_effect::simulate::COMPARED;
-use crate::lr_activity::ligand_effect::verdict::Verdict;
 use crate::mcp::shown_path;
 use crate::tui::flag_value;
 use crate::util::cli::{choices, value_name};
@@ -27,8 +26,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-/// Pairs the reply lists, of those that survived the controls, strongest first
-/// (as the run summary).
+/// Pairs the reply lists, of those with an estimate, smallest p first (as
+/// the run summary).
 const TOP_PAIRS: usize = 5;
 
 // * Arguments
@@ -856,9 +855,8 @@ fn push_note(reply: &mut [Content], note: &str) {
     }
 }
 
-/// The reply to a finished `pinto lra` for `a`: for the contact effect, the
-/// verdict counts over the pooled pairs and those that survived the
-/// controls, then the command that made the tables (when known), the files
+/// The reply to a finished `pinto lra` for `a`: for the contact effect, how
+/// many pooled pairs have an estimate and those with the smallest p, then the command that made the tables (when known), the files
 /// and what to do next.
 fn lra_reply(
     a: &LraToolArgs,
@@ -871,8 +869,9 @@ fn lra_reply(
     let mut reply = if method == LraMethod::ContactEffect {
         let mut r = table_summary(&made[0])?;
         if !a.only.is_empty() {
-            r["q_scope"] = "judged within this --only subset, not over every pair; \
-                            recorded under lra.subsets, the full table unchanged"
+            r["q_scope"] = "co-expression's local fdr fitted within this --only subset, not \
+                            over every pair; recorded under lra.subsets, the full table \
+                            unchanged"
                 .into();
         }
         r
@@ -904,33 +903,29 @@ fn table_summary(table: &Path) -> anyhow::Result<Value> {
     let rows = read_pooled_effects(&table.to_string_lossy())
         .map_err(|e| anyhow::anyhow!("{}: {e}", table.display()))?;
     let mut r = effects_summary(&rows);
-    r["reading"] =
-        "one row per pair and section (`all` pooled); verdict_note says why in words".into();
+    r["reading"] = "one row per pair and section (`all` pooled); warnings says why a pair has no \
+         estimate"
+        .into();
     Ok(r)
 }
 
-/// The pooled pairs in a few lines: how many, each verdict's count, and the
-/// strongest that survived the controls (percent change with its 95% interval, and
-/// local fdr).
+/// The pooled pairs in a few lines: how many, how many have an estimate, and
+/// those with the smallest p (percent change with its 95% interval, and p).
 pub(super) fn effects_summary(rows: &[output::PooledEffect]) -> Value {
-    let counts: Map<String, Value> = Verdict::counts(rows.iter().map(|r| r.verdict))
+    let ranked = rank_pooled(rows);
+    let top: Vec<Value> = ranked
         .iter()
-        .map(|(v, n)| (v.code().into(), (*n).into()))
-        .collect();
-    let top: Vec<Value> = rank_pooled(rows)
-        .into_iter()
         .take(TOP_PAIRS)
         .map(|r| {
             json!({
                 "ligand": r.ligand,
                 "receptor": r.receptor,
-                "verdict": r.verdict.code(),
                 "change": percent_text(r.pct, r.pct_lo, r.pct_hi),
-                "lfdr": sig(r.effect_dr_lfdr),
+                "p": sig(r.effect_dr_p),
             })
         })
         .collect();
-    json!({ "pairs": rows.len(), "verdicts": counts, "top": top })
+    json!({ "pairs": rows.len(), "estimable": ranked.len(), "top": top })
 }
 
 /// A local fdr to three significant digits; null when there is none.

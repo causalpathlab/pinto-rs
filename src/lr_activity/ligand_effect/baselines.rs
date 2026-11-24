@@ -43,7 +43,7 @@
 //! Permutations run in seeded chunks, a round of chunks in parallel, so a
 //! run is reproducible whatever the thread count.
 //!
-//! **Cost.** The permutations stop early once the verdict at 5% is settled
+//! **Cost.** The permutations stop early once the side of 5% is settled
 //! (curtailed sampling, the sequential idea of Besag & Clifford 1991,
 //! Biometrika 78:301): after each round, when every statistic already has
 //! so many exceedances that even none in the remaining permutations would
@@ -235,7 +235,7 @@ fn perm_p(exceed: usize, perms: usize) -> f64 {
 /// Run `total` permutations in chunks, a round of [`ROUND`] at a time in
 /// parallel: `f(rng, k)` handles `k` permutations and returns its
 /// exceedance counts, which are summed. After each round, `settled(counts)`
-/// says whether the verdict can no longer change; then the rest are
+/// says whether the side of 5% can no longer change; then the rest are
 /// skipped. Returns the counts and the permutations run.
 fn permuted<F>(
     seed: u64,

@@ -19,9 +19,9 @@
 //! receptor with everything else that differs between those types (their
 //! baseline responsiveness, their neighbours, their exposure). So the
 //! contrast alone is no finding, and the headline stays the competent effect.
-//! The verdict still asks for it, conservatively: an effect that does not
-//! exceed the incompetent one is not called specific to the receptor, which
-//! can also turn away a real effect on two responsive cell types.
+//! It is reported beside the headline, with its p: an effect that does not
+//! exceed the incompetent one is not specific to the receptor, though two
+//! responsive cell types can show that too.
 //!
 //! Every estimator's SE (`effect_dr`, `effect_ipw`, `effect_outcome`,
 //! `effect_unadj`) is its no-refit delete-one-tile jackknife SE
@@ -29,8 +29,7 @@
 //! headline keeps the region jackknife ([`super::jackknife::jackknife`]).
 //!
 //! `effect_unadj`, `effect_ipw` and `effect_outcome` are averaged over thresholds as
-//! the headline is, each by its own evidence, and read for comparison: they
-//! enter no verdict. The sensitivity fits below (the nested adjustment sets
+//! the headline is, each by its own evidence, and read for comparison. The sensitivity fits below (the nested adjustment sets
 //! and the no-spill fit) read the headline threshold alone, so a gap between
 //! them and `effect_dr` can come from the threshold as well as the
 //! adjustment.
@@ -75,8 +74,7 @@
 //! that section's receivers.
 //!
 //! Inference across pairs ([`super::report::report`]) runs once every pair is in: see
-//! there for the local fdrs, the identifiability diagnostics and the
-//! verdict labels.
+//! there for the p-values, co-expression's local fdr and the warnings.
 //!
 //! **Choices averaged, not asked for.** Where the analysis has a choice
 //! with no right answer it makes each and averages the estimates by
@@ -97,8 +95,8 @@
 //! ([`super::averaging::abf_average`]), not by Rubin's rules: thresholds are not
 //! exchangeable draws, and which one the data favour is itself of interest. Each
 //! estimand has its own weights. The weights read the estimates they average, so
-//! the average leans toward large z-scores; the verdict's comparison with the
-//! negative control, averaged the same way, is what guards against that.
+//! the average leans toward large z-scores; the comparison with the
+//! negative control, averaged the same way, guards against that.
 //!
 //! **Threshold–response curve.** The headline τ is chosen per pair
 //! ([`super::dose::choose_threshold`]). Beside it, the competent effect
@@ -149,7 +147,7 @@ pub struct PairData<'a> {
 }
 
 /// Rows for the pooled tissue, each section and each named receiver cell
-/// type. Verdicts and local fdrs
+/// type. p-values, local fdrs and warnings
 /// are left empty for [`super::report::report`], which needs every pair.
 ///
 /// With [`PairData::reweighted`], the two weightings of the program are
@@ -305,7 +303,7 @@ struct PairReads<'a> {
 }
 
 impl PairReads<'_> {
-    /// The row of one scope, its verdict and local fdrs left empty.
+    /// The row of one scope, its p-values and local fdrs left empty.
     fn row(
         &self,
         label: &str,

@@ -157,10 +157,9 @@ pub fn recorded(path: &std::path::Path) -> String {
     crate::util::paths::shown_path(&crate::util::staging::final_path(path))
 }
 
-/// `pinto lra --help`: the three methods, the reference, the verdicts.
+/// `pinto lra --help`: the three methods, the reference, what is reported.
 pub fn lra_long_about() -> String {
-    format!(
-        "Ligand-receptor analysis on spatial contacts.\n\
+    "Ligand-receptor analysis on spatial contacts.\n\
          \n\
          Reads a prior run (--from run.pinto.json: lc, cage, dsvd, ...) or data\n\
          files with coordinates (--coord), and asks per ligand-receptor pair:\n\
@@ -169,14 +168,14 @@ pub fn lra_long_about() -> String {
          \x20   Do cells touching ligand-carrying neighbours change their response\n\
          \x20   program, compared with similar cells that do not? Adjusted for\n\
          \x20   region, section, cell identity, neighbour make-up, depth and\n\
-         \x20   segmentation bleed, with a negative control. Writes {{out}}.lra.parquet.\n\
+         \x20   segmentation bleed, with a negative control. Writes {out}.lra.parquet.\n\
          \x20 --method coexpression-test\n\
          \x20   Permutation test of ligand-receptor co-expression within each link\n\
          \x20   community (needs an lc run and --lr-pairs).\n\
-         \x20   Writes {{out}}.lr_activity.parquet and .json.\n\
+         \x20   Writes {out}.lr_activity.parquet and .json.\n\
          \x20 --method coexpression-scores\n\
          \x20   Descriptive co-expression log odds per batch and link community, no\n\
-         \x20   test (needs an lc run and --lr-pairs). Writes {{out}}.lr_scores.parquet.\n\
+         \x20   test (needs an lc run and --lr-pairs). Writes {out}.lr_scores.parquet.\n\
          \n\
          Reference: contact-effect uses LIANA+ consensus pairs and receptor ->\n\
          signalling -> TF -> target programs (OmniPath, CollecTRI), downloaded\n\
@@ -184,15 +183,16 @@ pub fn lra_long_about() -> String {
          PINTO_REFERENCE_DIR=<dir> moves the cache, PINTO_OFFLINE=1 never\n\
          downloads, PINTO_REFERENCE_REFRESH=1 rebuilds it.\n\
          \n\
-         Verdicts (column `verdict`, explained in `verdict_note`):\n\
-         {}\n\
+         Nothing is judged: each pair's effect, its effect in receptor-negative\n\
+         receivers and their contrast are reported with SE, df and p (the SE\n\
+         widened by a tile jackknife), and co-expression with its local fdr.\n\
+         `warnings` says why a pair has no estimate.\n\
          Check what this tissue can detect with `pinto lra simulate`.\n\
          \n\
          Example:\n\
          \x20 pinto lra --from out/run1.pinto.json\n\
-         \x20 pinto lra data.zarr --coord cells.csv -o out/lra",
-        ligand_effect::verdict::verdict_help()
-    )
+         \x20 pinto lra data.zarr --coord cells.csv -o out/lra"
+        .to_string()
 }
 
 /// `pinto lra simulate --help`.

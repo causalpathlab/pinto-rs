@@ -20,9 +20,9 @@
 //! - `effect_dr_contrast`, the contrast: competent effect − incompetent effect.
 //!   Competence is read from identity bins, so competent and incompetent
 //!   receivers are different cell types by construction and the contrast
-//!   conflates the receptor with cell type; it is no headline, but a
-//!   significant effect must exceed the incompetent one;
-//! - for comparison, and in no verdict: `coexpr_log_or`, the co-expression log odds
+//!   conflates the receptor with cell type; it is no headline, but it says
+//!   whether the effect is specific to receptor-carrying receivers;
+//! - for comparison: `coexpr_log_or`, the co-expression log odds
 //!   ratio; `marginal_cor`, the correlation of response and contact ligand; `effect_unadj`, the
 //!   exposed minus unexposed difference in mean response; `effect_ipw` and `effect_outcome`, the headline's two halves,
 //!   overlap weights alone and the outcome regression alone. `effect_ipw` and
@@ -32,20 +32,15 @@
 //!   Every estimator's SE is its no-refit delete-one-tile jackknife
 //!   ([`jackknife::EstimatorJackknife`]).
 //!
-//! **Inference across pairs** ([`report::report`]): Efron's local fdr
-//! ([`crate::util::local_fdr`]) within the pooled rows and within each section,
-//! under the empirical and the theoretical null, for the competent effect
-//! (two-sided), co-expression (one-sided, positive) and the controls; the verdict
-//! ([`verdict::Verdict`]) reads the empirical-null lfdr at
-//! [`Internals::local_fdr_level`] (a family under
-//! [`report::MIN_STATISTICS_FOR_LOCAL_FDR`] tests its p-values by Bonferroni at
-//! [`Internals::small_family_level`]). When the ligand marks
-//! a cell type, exposure is nearly "has a neighbour of that type" and cannot be
-//! told from neighbour identity: `exposure_eta2` measures how much of the
-//! exposure the dominant neighbour's identity bin explains, and at
-//! [`INTERNALS`]`.max_exposure_eta2` the pair is `celltype_inseparable` rather
-//! than a finding. A significant competent effect beside a failed control is
-//! `control_failed`.
+//! **Across pairs** ([`report::report`]): nothing is judged. The causal
+//! statistics (the competent effect, the effect in receptor-negative
+//! receivers, their contrast) are reported as estimate, SE, df and
+//! two-sided p, the SE widened by the tile jackknife. Co-expression, a
+//! baseline, also gets Efron's local fdr ([`crate::util::local_fdr`])
+//! within the pooled rows and within each section. When the ligand marks a
+//! cell type, exposure is nearly "has a neighbour of that type" and cannot
+//! be told from neighbour identity: `exposure_eta2` measures how much of the
+//! exposure the dominant neighbour's identity bin explains.
 //!
 //! "Effect" is a contrast of two stochastic interventions: each receiver's
 //! dose drawn from its own plausible doses above versus below the
@@ -73,8 +68,8 @@
 //!   region row's by the nuisance error,
 //!   [`association`] reads the unadjusted comparisons, [`inference`] and
 //!   [`averaging`] read and combine the estimates;
-//! - across pairs: [`report`] corrects for multiplicity and [`verdict`] words
-//!   the answer;
+//! - across pairs: [`report`] adds the p-values, co-expression's local fdr
+//!   and the warnings;
 //! - around them: [`baselines`] are the co-expression scores it is compared
 //!   with, [`simulate`] benchmarks the estimator on this tissue with a planted
 //!   effect, [`output`] writes and reads the tables, and [`timing`] sums the
@@ -118,7 +113,6 @@ mod targets;
 mod thresholds;
 mod timing;
 mod tissue;
-pub mod verdict;
 
 #[cfg(test)]
 mod tests;
@@ -156,16 +150,6 @@ pub struct Internals {
     pub min_ess: f64,
     /// Smallest mean overlap weight `e(1 − e)` of a subgroup.
     pub min_overlap: f64,
-    /// Share of exposure variance explained by neighbour identity at which
-    /// a pair is `celltype_inseparable`.
-    pub max_exposure_eta2: f64,
-    /// The local fdr (under the empirical null) below which a statistic
-    /// counts in the verdicts, Efron's conventional 0.2. The tables carry
-    /// every lfdr; only the one-word verdict reads this.
-    pub local_fdr_level: f64,
-    /// The family-wise level p-values are tested at, Bonferroni over the
-    /// family, where a family is too small for a local fdr.
-    pub small_family_level: f64,
     /// Dimension of the receiver identity projection, and its bins (2^bits).
     pub identity_dim: usize,
     pub identity_bits: usize,
@@ -185,9 +169,6 @@ pub const INTERNALS: Internals = Internals {
     min_arm: 20,
     min_ess: 30.0,
     min_overlap: 0.01,
-    max_exposure_eta2: 0.8,
-    local_fdr_level: 0.2,
-    small_family_level: 0.05,
     identity_dim: 10,
     identity_bits: 6,
     min_targets: 5,
