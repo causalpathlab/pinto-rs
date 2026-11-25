@@ -11,7 +11,7 @@ mod common;
 
 use common::write_run;
 use legume_tui::testing::{alive, Private, Replies, Setup, Term, PROMPT};
-use legume_tui::Size;
+use legume_tui::{Key, Size};
 use std::time::Duration;
 
 /// The run screen's tab of flags: drawn on every full paint.
@@ -50,7 +50,7 @@ fn term_answering(dir: &Private, args: &[&str], env: &[(&str, &str)], replies: R
 /// Detach `t` by the key, keeping the session unnamed, and wait for it to
 /// be listed as `id` detached.
 fn detach(dir: &Private, t: &mut Term, id: &str) {
-    t.type_(b"\x1b\x04");
+    t.type_(&Key::DETACH.bytes());
     t.answer(1, b"\r");
     assert_eq!(t.exit_code(), 0);
     assert!(t.cooked(), "terminal restored after detach");
@@ -103,8 +103,8 @@ fn run_detaches_attaches_and_is_killed_through_its_quit_path() {
     }
     assert!(second.alternate());
     // The keys of the session are listed with the others.
-    second.wait_screen("ctrl+alt+d detach");
-    second.wait_screen("ctrl+alt+s switch");
+    second.wait_screen(&format!("{} detach", Key::DETACH.display()));
+    second.wait_screen(&format!("{} switch", Key::SWITCH.display()));
     second.wait_screen("tab / shift-tab / shift-enter / 1-4 screens");
     // Keys reach the program: typed into the output header it asks first.
     second.type_(b"zq");
@@ -170,7 +170,7 @@ fn run_and_view_opted_out_run_plain() {
             .contains("no live pinto sessions"));
         assert!(!plain.text().contains("\x1b_Ga=d,d=A"), "no client's reset");
         // No session, no session keys on the screen.
-        assert!(!plain.text().contains("ctrl+alt+d"), "{args:?}");
+        assert!(!plain.text().contains(&Key::DETACH.display()), "{args:?}");
         plain.type_(b"\x03");
         assert_eq!(plain.exit_code(), 0);
         assert!(plain.cooked(), "terminal restored");
@@ -254,7 +254,7 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
     let pid = dir.program_pid();
 
     // Named as it is left.
-    first.type_(b"\x1b\x04");
+    first.type_(&Key::DETACH.bytes());
     first.answer(1, b"tissue\r");
     assert_eq!(first.exit_code(), 0);
     first.wait_for("detached: tissue");
@@ -271,7 +271,7 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
     second.wait_screen(VIEW_PAINTED);
     second.wait_screen("quadrants");
     second.wait_for_after(asked, "\x1b[?1003h");
-    second.type_(b"\x1b\x04");
+    second.type_(&Key::DETACH.bytes());
     assert_eq!(second.exit_code(), 0);
     dir.wait_listed("tissue (pinto-view-1)\tdetached");
 
@@ -284,8 +284,8 @@ fn view_comes_back_on_attach_and_stops_on_kill() {
     third.wait_screen("kitty");
     // `?` lists the session keys among the view's.
     third.type_(b"?");
-    third.wait_screen("ctrl+alt+d  detach");
-    third.wait_screen("ctrl+alt+s  switch");
+    third.wait_screen(&format!("{}  detach", Key::DETACH.display()));
+    third.wait_screen(&format!("{}  switch", Key::SWITCH.display()));
 
     // Killed while attached: it quits as ctrl+c does, the client ends with
     // it, and nothing is left, kitty's files among it.
