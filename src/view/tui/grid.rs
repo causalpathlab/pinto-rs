@@ -294,7 +294,7 @@ impl App<'_> {
             .iter()
             .position(|t| {
                 let r = t.bounds.pad(FIT_MARGIN);
-                (r.x0..=r.x1).contains(&cx) && (r.y0..=r.y1).contains(&cy)
+                r.contains(cx, cy)
             })
             .unwrap_or(open);
         Some(Camera::of(

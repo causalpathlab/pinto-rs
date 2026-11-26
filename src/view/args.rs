@@ -174,12 +174,30 @@ pub struct ViewArgs {
 
     #[arg(
         long,
-        help = "Draw edges coloured by link community",
+        help = "Draw edges coloured by link community, or by a round's groups",
         long_help = "Draw adjacent cell pairs coloured by their link community.\n\
+                     With --show types or clusters, a link both of whose ends\n\
+                     are in one group (isotypic) is in that group's colour, and\n\
+                     one between two groups (heterotypic) in the page's text\n\
+                     colour, drawn on top (--edges-shown picks which).\n\
                      They appear only where the view is zoomed in far enough\n\
                      for an edge to span a few pixels."
     )]
     pub edges: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value = "all",
+        help = "With --edges on a round's groups: all, heterotypic or isotypic links",
+        long_help = "Which links --edges draws on a round's groups (--show types\n\
+                     or clusters), by the groups of their two ends:\n\
+                     \x20 all          both, heterotypic on top\n\
+                     \x20 heterotypic  only links between two groups\n\
+                     \x20 isotypic     only links within one group\n\
+                     Links by link community (--show communities) are all drawn."
+    )]
+    pub edges_shown: EdgesShown,
 
     #[arg(
         long,
@@ -331,6 +349,34 @@ pub struct ViewArgs {
 
     #[command(flatten)]
     pub session: legume_tui::cli::SessionArgs,
+}
+
+/// Which links a round's grouping draws, by the groups of their two ends
+/// (`--edges-shown`).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgesShown {
+    /// Both, heterotypic on top.
+    #[default]
+    All,
+    /// Only links between two groups.
+    Heterotypic,
+    /// Only links within one group.
+    Isotypic,
+}
+
+impl EdgesShown {
+    /// Whether links between two groups (`heterotypic`), or within one,
+    /// are drawn.
+    pub fn draws(self, heterotypic: bool) -> bool {
+        match self {
+            EdgesShown::All => true,
+            EdgesShown::Heterotypic => heterotypic,
+            EdgesShown::Isotypic => !heterotypic,
+        }
+    }
 }
 
 /// What groups the cells on the map (`--show`).

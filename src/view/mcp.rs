@@ -11,6 +11,7 @@ use super::gene::{GeneMap, Source};
 use super::lra::{self as lra_layer, LraView, PairShow};
 use super::render::{Layer, Style, Viewport};
 use super::round::{round_name, Round};
+use super::EdgesShown;
 use super::{lupin, markers, scalebar, Base, Level, Show, FIT_MARGIN};
 use crate::mcp::{parse, shown_path};
 use clap::ValueEnum;
@@ -74,6 +75,8 @@ pub(super) struct Open {
     source: Source,
     clip: f32,
     edges: bool,
+    /// Which of a round's grouping's links `edges` draws.
+    edges_shown: EdgesShown,
     point: f32,
     /// The world window asked for; the map drawn covers it.
     window: Rect,
@@ -140,6 +143,7 @@ pub(super) struct MapArgs {
     source: Option<String>,
     clip: Option<f32>,
     edges: Option<bool>,
+    edges_shown: Option<String>,
     point_size: Option<f32>,
     theme: Option<String>,
     bbox: Option<[f32; 4]>,
@@ -198,6 +202,7 @@ impl Open {
             source: Source::Observed,
             clip: 99.,
             edges: false,
+            edges_shown: EdgesShown::All,
             point: 1.,
             window,
             drawn: None,
@@ -372,9 +377,12 @@ impl Open {
         );
         let edges = a.edges.unwrap_or(self.edges);
         if edges {
-            // A round's groupings have no edges; they load none.
             self.base.load_edges(level)?;
         }
+        let edges_shown = match &a.edges_shown {
+            Some(s) => value_enum(s, "edges_shown")?,
+            None => self.edges_shown,
+        };
         let comm = &level.comm;
         let mut layer = if regrouped {
             self.layer.fit(comm)
@@ -444,6 +452,7 @@ impl Open {
             layer,
             focus,
             edges,
+            edges_shown,
             point,
             source,
             clip,
@@ -460,7 +469,8 @@ impl Open {
         if let Some(theme) = n.theme {
             super::repalette(&self.base, theme, &mut self.levels, self.round.as_mut());
         }
-        (self.layer, self.focus, self.edges, self.point) = (n.layer, n.focus, n.edges, n.point);
+        (self.layer, self.focus, self.point) = (n.layer, n.focus, n.point);
+        (self.edges, self.edges_shown) = (n.edges, n.edges_shown);
         (self.source, self.clip) = (n.source, n.clip);
         if let Some(gene) = n.gene {
             self.gene = gene;
@@ -517,7 +527,7 @@ impl Open {
     fn style(&self) -> Style<'_> {
         Style {
             layer: self.layer,
-            edges: self.edges,
+            edges: self.edges.then_some(self.edges_shown),
             focus: self.focus(),
             theme: self.base.theme(),
             point: self.point,
@@ -560,6 +570,7 @@ impl Open {
             source: self.source,
             clip: self.clip,
             edges: self.edges,
+            edges_shown: self.edges_shown,
             point_size: self.point,
             bbox: rect(self.window),
         }
@@ -635,6 +646,8 @@ impl Open {
                 "feature": g.feature, "source": g.source.name(), "clip": g.clip,
             })),
             "edges": self.edges,
+            "edges_shown": super::value_name(&self.edges_shown),
+            "links": self.links_shown(vp),
             "point_size": self.point,
             "theme": super::value_name(&theme),
             "image": [vp.w, vp.h],
@@ -644,6 +657,30 @@ impl Open {
             "background": hex(theme.background()),
             "dimmed": hex(theme.dimmed()),
             "legend": legend,
+        })
+    }
+
+    /// With edges on a round's grouping: the colour of links between two
+    /// groups, and how many are within one group
+    /// (isotypic) and between two (heterotypic), on the tissue and with
+    /// both ends in the window.
+    fn links_shown(&self, vp: &Viewport) -> Value {
+        let level = self.level();
+        let Some(links) = level.edges.as_ref().filter(|_| self.edges) else {
+            return Value::Null;
+        };
+        let window = vp.window();
+        let (x, y) = (&self.base.geom.x, &self.base.geom.y);
+        let inside = |i: u32| window.contains(x[i as usize], y[i as usize]);
+        let (a, b) = (&links.edges.a, &links.edges.b);
+        let Some((iso_in, hetero_in)) = links.ends_count(|e| inside(a[e]) && inside(b[e])) else {
+            return Value::Null;
+        };
+        let (iso, hetero) = links.kinds;
+        json!({
+            "heterotypic_colour": hex(self.base.theme().text()),
+            "tissue": {"isotypic": iso, "heterotypic": hetero},
+            "window": {"isotypic": iso_in, "heterotypic": hetero_in},
         })
     }
 
@@ -808,6 +845,7 @@ struct Next {
     layer: Layer,
     focus: Vec<bool>,
     edges: bool,
+    edges_shown: EdgesShown,
     point: f32,
     source: Source,
     clip: f32,

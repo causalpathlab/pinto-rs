@@ -1,6 +1,6 @@
 //! Writing a still figure of a view to a file, without a terminal.
 
-use super::args::{Show, ViewArgs};
+use super::args::{EdgesShown, Show, ViewArgs};
 use super::color::Theme;
 use super::data::Rect;
 use super::gene::{GeneMap, Source};
@@ -29,9 +29,7 @@ pub(super) fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     );
     let base = Base::load(args.prefix(), &args.units, theme)?;
     let mut level = match args.show {
-        Show::Communities => {
-            base.level(base.run.level_index(args.level.as_deref())?, args.edges)?
-        }
+        Show::Communities => base.level(base.run.level_index(args.level.as_deref())?, false)?,
         show => {
             let path = args.round.as_deref().ok_or_else(|| {
                 anyhow::anyhow!("--show {show:?} needs --round FILE (a lupin round)")
@@ -50,6 +48,10 @@ pub(super) fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     if args.structure {
         return write_structure_still(args, &base, &level, theme);
     }
+    // A round's grouping's links: the level's, by the groups of their ends.
+    if args.edges {
+        base.load_edges(&mut level)?;
+    }
 
     let vp = still_viewport(args, &base)?;
     let focus = args
@@ -64,7 +66,7 @@ pub(super) fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     }
     let style = Style {
         layer: args.layer,
-        edges: args.edges,
+        edges: args.edges.then_some(args.edges_shown),
         focus: focus.as_deref(),
         theme,
         point: args.point_size,
@@ -259,8 +261,11 @@ impl Still<'_> {
         if !focused.is_empty() {
             flag("--focus", Some(ids(&self.level.comm, &focused, ",")));
         }
-        if style.edges {
+        if let Some(shown) = style.edges {
             flag("--edges", None);
+            if shown != EdgesShown::All {
+                flag("--edges-shown", Some(value_name(&shown)));
+            }
         }
         if style.point != 1. {
             flag("--point-size", Some(style.point.to_string()));

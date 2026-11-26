@@ -191,13 +191,6 @@ impl App<'_> {
             )?;
             self.levels[next] = Some(self.base.level(next, self.edges)?);
         }
-        let base = self.base;
-        if let Some(level) = self.levels[next].as_mut() {
-            // edges turned on since this level was loaded
-            if self.edges && !level.grouping && level.edges.is_none() {
-                base.load_edges(level)?;
-            }
-        }
         self.show = Show::Communities;
         self.bar_focus = None;
         self.cur = next;
@@ -218,10 +211,6 @@ impl App<'_> {
         &mut self,
         terminal: Option<&mut DefaultTerminal>,
     ) -> anyhow::Result<()> {
-        if self.level().grouping {
-            self.status = "edges belong to communities: a to show them".into();
-            return Ok(());
-        }
         if !self.edges && self.level().edges.is_none() {
             self.busy(terminal, "loading edges ...".into())?;
             let base = self.base;

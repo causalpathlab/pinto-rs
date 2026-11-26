@@ -43,6 +43,12 @@ impl Theme {
         self.page().dimmed
     }
 
+    /// The page's text, near black or near white: links between two
+    /// groups, which no group's colour may stand for.
+    pub fn text(self) -> Rgb {
+        self.page().text
+    }
+
     /// Cells with no community.
     pub fn no_community(self) -> Rgb {
         self.page().no_group

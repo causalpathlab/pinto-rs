@@ -223,10 +223,10 @@ impl App<'_> {
             let shown = focus.iter().position(|&f| f);
             self.set_focus(focus, shown);
         }
-        // A round's groupings have no edges of their own.
-        if view.show == Show::Communities && view.edges != self.edges {
+        if view.edges != self.edges {
             self.toggle_edges(terminal)?;
         }
+        self.edges_shown = view.edges_shown;
         self.point = view.point_size;
         self.follow_gene(view);
         let [x0, y0, x1, y1] = view.bbox;

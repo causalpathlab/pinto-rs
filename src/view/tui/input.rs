@@ -48,6 +48,7 @@ impl App<'_> {
             gene,
             self.source,
             self.edges,
+            self.edges_shown,
             self.point,
             cam,
         )
