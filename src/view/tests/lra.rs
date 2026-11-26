@@ -890,3 +890,39 @@ fn a_table_with_q_values_is_refused() {
         .to_string();
     assert!(e.contains("rerun pinto lra"), "{e}");
 }
+
+/// `view_lra`'s marks: pairs marked by name, every pair shown, unmarked and
+/// cleared; an unknown name changes nothing.
+#[test]
+fn view_lra_marks_pairs_by_name_or_as_shown() {
+    use crate::view::mcp::{LraArgs, Open};
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = lra_run(dir.path());
+    let mut open = Open::new(&prefix, None).unwrap();
+    let call = |open: &mut Open, a: serde_json::Value| {
+        let a: LraArgs = serde_json::from_value(a).unwrap();
+        open.lra_with(a, &|_| {})
+    };
+    let marked = |r: &serde_json::Value| -> Vec<String> {
+        serde_json::from_value(r["marked"].clone()).unwrap()
+    };
+    let r = call(&mut open, json!({"mark": ["L1:R1"]})).unwrap();
+    assert_eq!(marked(&r), ["L1:R1"]);
+    assert_eq!(r["list"][0]["marked"], true);
+
+    let e = call(&mut open, json!({"mark": ["L9:R9"], "search": "g0"}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("no pair"), "{e}");
+    let r = call(&mut open, json!({})).unwrap();
+    assert_eq!(marked(&r), ["L1:R1"], "nothing changed");
+    assert_eq!(r["filter"]["search"], "");
+
+    let r = call(&mut open, json!({"search": "g1", "mark_shown": true})).unwrap();
+    assert_eq!(marked(&r), ["G1:R1", "L1:R1"]);
+    let r = call(&mut open, json!({"unmark": ["L1:R1"]})).unwrap();
+    assert_eq!(marked(&r), ["G1:R1"]);
+    let r = call(&mut open, json!({"clear_marks": true})).unwrap();
+    assert!(marked(&r).is_empty());
+}

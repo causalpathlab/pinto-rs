@@ -70,6 +70,8 @@ tissue and reports power and type I error. Run lra simulate to check power \
 and calibration before trusting lra on a new tissue. A large tissue can run \
 in shards: `run_lra` with `shard` I/N for each I, each shard a separate job, \
 then `run_lra_merge` on the N shard files writes the tables of the whole run. \
+`run_lra_link_communities` lists a run's link communities for `run_lra`'s \
+`link_community`. \
 On a cluster, `run_lra` with `cluster_shards` N runs nothing and writes a \
 legume benchmark spec of the N shards and their merge (null draws too, with \
 `null_permutations`); hand it to legume-mcp: `benchmark_plan` and \

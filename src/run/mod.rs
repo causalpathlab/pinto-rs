@@ -8,6 +8,8 @@
 pub(crate) mod form;
 pub(crate) mod lra;
 mod lra_cluster;
+mod lra_link_communities;
+pub(crate) mod lra_subset;
 pub(crate) mod mcp;
 pub(crate) mod script;
 pub(crate) mod sim;
