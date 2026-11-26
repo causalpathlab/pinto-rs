@@ -1239,9 +1239,11 @@ for kitty graphics through a temporary file (inline over ssh), and
 ### Sessions
 
 `pinto run` and `pinto view` keep going when the terminal goes: a dropped
-connection, or ctrl+alt+d, detaches them (the first time, it asks for a
+connection, or ctrl+], detaches them (the first time, it asks for a
 name), and the fits or lupin run on. Started again with nothing named, each
-offers the live sessions to return to; ctrl+alt+s switches to another one.
+offers the live sessions to return to; ctrl+\ switches to another one
+(`LEGUME_TUI_DETACH_KEY` and `LEGUME_TUI_SWITCH_KEY` name others, e.g.
+`ctrl+alt+k`).
 On return the screen is drawn again for the terminal it is on now, its
 image protocol asked anew. What a session ends with while nobody is
 attached (the fits' summary, an error) is said by the next `pinto session list`,
