@@ -51,7 +51,7 @@ fn each_command_s_help_shows_a_short_list_of_flags() {
         ("sim baseline", 8),
         ("compare", 9),
         #[cfg(feature = "view")]
-        ("view", 33),
+        ("view", 34),
     ];
     let mut cli = Cli::command();
     cli.build();

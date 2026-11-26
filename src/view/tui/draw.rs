@@ -3,7 +3,7 @@
 use super::super::color::{Ramp, Rgb};
 use super::super::gene::GeneMap;
 use super::super::render::{self, Frame, Layer, Style};
-use super::super::{legend_swatch, markers, scalebar, thousands, Level, Show};
+use super::super::{legend_swatch, markers, scalebar, thousands, value_name, Level, Show};
 use super::{lra, plots, relabel, App, Gfx, Pick};
 use crate::tui::style;
 use legume_tui::chrome::rgb;
@@ -34,7 +34,7 @@ impl App<'_> {
                 level,
                 Style {
                     layer: Layer::Community(c),
-                    edges: false,
+                    edges: None,
                     focus: None,
                     theme: self.base.theme(),
                     point: self.point,
@@ -56,7 +56,7 @@ impl App<'_> {
     fn style(&self) -> Style<'_> {
         Style {
             layer: self.layer,
-            edges: self.edges && !self.level().grouping,
+            edges: self.edges.then_some(self.edges_shown),
             focus: self.focus(),
             theme: self.base.theme(),
             point: self.point,
@@ -82,6 +82,15 @@ impl App<'_> {
         }
         if self.need_map {
             self.need_map = false;
+            // A round's grouping shown since edges were turned on; links it
+            // cannot have turn edges off and say why.
+            if self.edges {
+                let base = self.base;
+                if let Err(e) = base.load_edges(self.level_mut()) {
+                    self.edges = false;
+                    self.status = format!("edges off: {e:#}");
+                }
+            }
             let vp = self.viewport();
             let t = Instant::now();
             let (level, style) = self.drawn();
@@ -280,9 +289,19 @@ impl App<'_> {
                 format!("{:.1} MB", self.send_bytes as f64 / 1e6),
             ));
         }
-        if self.edges {
-            let n = level.edges.as_ref().map_or(0, |(e, _)| e.len());
-            lines.push(row("edges", format!("{} (e)", thousands(n))));
+        if let Some(links) = level.edges.as_ref().filter(|_| self.edges) {
+            let n = if links.ends.is_some() {
+                let (iso, hetero) = links.kinds;
+                let shown = value_name(&self.edges_shown);
+                format!(
+                    "{} iso, {} hetero, {shown} shown",
+                    thousands(iso),
+                    thousands(hetero)
+                )
+            } else {
+                thousands(links.edges.len())
+            };
+            lines.push(row("edges", format!("{n} (e)")));
         }
         match self.cursor {
             _ if self.grid_shows() => lines.push(row("grid", self.grid_line())),

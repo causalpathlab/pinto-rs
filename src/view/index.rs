@@ -7,6 +7,7 @@
 
 use super::data::{Communities, Edges, Rect, NO_CLUSTER};
 use crate::util::common::*;
+use std::sync::Arc;
 
 /// Cells [`Grid::pitch`] measures, at most.
 const PITCH_SAMPLE: usize = 2000;
@@ -367,4 +368,66 @@ fn coarsen(prev: &PyramidLevel, k: usize) -> PyramidLevel {
         });
     next.finish(k);
     next
+}
+
+/// In [`Links::ends`], a link whose two ends are in different groups of a
+/// lupin round (heterotypic, for cell types).
+pub const HETEROTYPIC: u16 = u16::MAX - 1;
+
+/// A level's links as drawn: its link-community edges and their index,
+/// read once and shared by the level and the round's groupings made from
+/// it, and, on a grouping, each link's group by its ends.
+#[derive(Clone)]
+pub struct Links {
+    pub edges: Arc<Edges>,
+    pub index: Arc<EdgeIndex>,
+    /// On a round's grouping, per link: its ends' group when they share
+    /// one (isotypic), [`HETEROTYPIC`] between two, [`NO_CLUSTER`] with an
+    /// end in none. `None` draws the links by link community.
+    pub ends: Option<Vec<u16>>,
+    /// On a grouping, its isotypic and heterotypic links on the tissue.
+    pub kinds: (usize, usize),
+}
+
+impl Links {
+    /// These links on a grouping of `cluster` per cell.
+    pub fn by_ends(&self, cluster: &[u16]) -> Links {
+        let ends = self
+            .edges
+            .a
+            .iter()
+            .zip(&self.edges.b)
+            .map(
+                |(&a, &b)| match (cluster[a as usize], cluster[b as usize]) {
+                    (NO_CLUSTER, _) | (_, NO_CLUSTER) => NO_CLUSTER,
+                    (ca, cb) if ca == cb => ca,
+                    _ => HETEROTYPIC,
+                },
+            )
+            .collect();
+        let mut links = Links {
+            edges: self.edges.clone(),
+            index: self.index.clone(),
+            ends: Some(ends),
+            kinds: (0, 0),
+        };
+        links.kinds = links.ends_count(|_| true).expect("by ends");
+        links
+    }
+
+    /// On a grouping, the links `keep` takes (by position) within one group
+    /// (isotypic) and between two (heterotypic).
+    pub fn ends_count(&self, keep: impl Fn(usize) -> bool) -> Option<(usize, usize)> {
+        let ends = self.ends.as_ref()?;
+        let (mut iso, mut hetero) = (0, 0);
+        for (e, &g) in ends.iter().enumerate() {
+            match g {
+                NO_CLUSTER => {}
+                _ if !keep(e) => {}
+                HETEROTYPIC => hetero += 1,
+                _ => iso += 1,
+            }
+        }
+        Some((iso, hetero))
+    }
 }

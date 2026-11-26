@@ -32,11 +32,11 @@ mod tests;
 
 use crate::util::cli::value_name;
 use args::{check_clip, check_point_size, POINT_SIZES};
-pub use args::{Show, ViewArgs};
+pub use args::{EdgesShown, Show, ViewArgs};
 use color::Theme;
-use data::{Communities, Edges, Geometry, Run};
+use data::{Communities, Geometry, Run};
 use gene::{Expression, GeneMap, Source};
-use index::{EdgeIndex, Grid, Pyramid};
+use index::{EdgeIndex, Grid, Links, Pyramid};
 use markers::FeatureRates;
 use render::{Frame, Layer, Scene, Style, Viewport};
 use scalebar::Units;
@@ -81,6 +81,9 @@ struct Followed {
     source: Source,
     clip: f32,
     edges: bool,
+    /// Which of a round's grouping's links `edges` draws.
+    #[serde(default)]
+    edges_shown: EdgesShown,
     point_size: f32,
     bbox: [f32; 4],
 }
@@ -184,6 +187,8 @@ struct Base {
     spacing: f32,
     /// The run's expression data, opened on the first observed gene.
     expression: OnceLock<Result<Option<Expression>, String>>,
+    /// Each level's links, read on the first ask for them.
+    links: Vec<OnceLock<Links>>,
     /// Colours of every frame and palette drawn from this run; the view
     /// takes another when a terminal of another background attaches.
     theme: std::sync::RwLock<Theme>,
@@ -202,6 +207,7 @@ impl Base {
                 grid.pitch(&geom.x, &geom.y)
             })?;
         Ok(Base {
+            links: run.levels.iter().map(|_| OnceLock::new()).collect(),
             run,
             geom,
             grid,
@@ -218,6 +224,7 @@ impl Base {
     fn laid_out(&self, geom: Geometry) -> Self {
         let (grid, spacing) = gridded(&geom);
         Base {
+            links: self.run.levels.iter().map(|_| OnceLock::new()).collect(),
             run: self.run.clone(),
             geom,
             grid,
@@ -290,7 +297,7 @@ impl Base {
                 };
                 let style = Style {
                     layer: Layer::Gene,
-                    edges: false,
+                    edges: None,
                     focus: None,
                     theme: self.theme(),
                     point: style.point,
@@ -324,17 +331,36 @@ impl Base {
         Ok(level)
     }
 
+    /// The level's links, by link community; a round's grouping's are the
+    /// links of the level it was made from, by the groups of their ends.
     fn load_edges(&self, level: &mut Level) -> anyhow::Result<()> {
-        if level.edges.is_none() && !level.grouping {
-            let t = Instant::now();
-            let edges = self
-                .run
-                .load_edges(&self.geom, &self.run.levels[level.index])?;
-            let index = EdgeIndex::build(&self.grid, &self.geom.x, &self.geom.y, &edges);
-            log::info!("edges: {} in {:.2?}", edges.len(), t.elapsed());
-            level.edges = Some((edges, index));
+        if level.edges.is_none() {
+            let links = self.links(level.index)?;
+            level.edges = Some(if level.grouping {
+                links.by_ends(&level.comm.cluster)
+            } else {
+                links
+            });
         }
         Ok(())
+    }
+
+    /// Level `i`'s links by link community, read and indexed once.
+    fn links(&self, i: usize) -> anyhow::Result<Links> {
+        if let Some(links) = self.links[i].get() {
+            return Ok(links.clone());
+        }
+        let t = Instant::now();
+        let edges = self.run.load_edges(&self.geom, &self.run.levels[i])?;
+        let index = EdgeIndex::build(&self.grid, &self.geom.x, &self.geom.y, &edges);
+        log::info!("edges: {} in {:.2?}", edges.len(), t.elapsed());
+        let links = Links {
+            edges: edges.into(),
+            index: index.into(),
+            ends: None,
+            kinds: (0, 0),
+        };
+        Ok(self.links[i].get_or_init(|| links).clone())
     }
 
     fn load_features(&self, level: &mut Level) -> anyhow::Result<()> {
@@ -394,7 +420,7 @@ impl Base {
             comm: &level.comm,
             grid: &self.grid,
             pyramid: &level.pyramid,
-            edges: level.edges.as_ref().map(|(e, i)| (e, i)),
+            edges: level.edges.as_ref(),
             spacing: self.spacing,
         }
     }
@@ -457,11 +483,11 @@ struct Level {
     comm: Communities,
     pyramid: Pyramid,
     palette: Vec<color::Rgb>,
-    edges: Option<(Edges, EdgeIndex)>,
+    edges: Option<Links>,
     /// Feature rates per community, loaded when markers are first asked for.
     features: Option<FeatureRates>,
-    /// A lupin round's grouping rather than the level's communities: it
-    /// has no edges of its own.
+    /// A lupin round's grouping rather than the level's communities: its
+    /// links are its level's, by the groups of their ends.
     grouping: bool,
 }
 

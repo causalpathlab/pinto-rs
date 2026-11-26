@@ -15,9 +15,10 @@
 //! Rows are split into bands drawn in parallel; each band reads only the
 //! grid rows it overlaps.
 
+use super::args::EdgesShown;
 use super::color::{self, Ramp, Rgb, Theme};
-use super::data::{Communities, Edges, Geometry, Rect, NO_CLUSTER};
-use super::index::{EdgeIndex, Grid, Pyramid, PyramidLevel};
+use super::data::{Communities, Geometry, Rect, NO_CLUSTER};
+use super::index::{Grid, Links, Pyramid, PyramidLevel, HETEROTYPIC};
 use crate::util::common::*;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
@@ -134,7 +135,7 @@ pub struct Scene<'a> {
     pub comm: &'a Communities,
     pub grid: &'a Grid,
     pub pyramid: &'a Pyramid,
-    pub edges: Option<(&'a Edges, &'a EdgeIndex)>,
+    pub edges: Option<&'a Links>,
     /// Typical distance between neighbouring cells, world units.
     pub spacing: f32,
 }
@@ -343,7 +344,9 @@ impl Frame {
 #[derive(Clone, Copy, Debug)]
 pub struct Style<'f> {
     pub layer: Layer,
-    pub edges: bool,
+    /// Edges, and which of a round's grouping's links are drawn (links by
+    /// link community are all drawn); `None` draws none.
+    pub edges: Option<EdgesShown>,
     /// Communities to show, one flag per community; the rest are dimmed and
     /// their edges hidden. `None` shows every community.
     pub focus: Option<&'f [bool]>,
@@ -559,7 +562,8 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
         Mode::Points => {
             let edges = scene
                 .edges
-                .filter(|_| style.edges && spacing_px >= MIN_EDGE_PX);
+                .zip(style.edges)
+                .filter(|_| spacing_px >= MIN_EDGE_PX);
             // Smaller discs when edges show, so the lines between them read.
             let fill = if edges.is_some() { 0.28 } else { 0.45 };
             let radius = (fill * spacing_px * style.point).max(0.5);
@@ -571,8 +575,8 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
                 background,
                 || (),
                 |_, canvas| {
-                    if let Some((edges, index)) = edges {
-                        draw_edges(canvas, scene, vp, &paint, edges, index, &across);
+                    if let Some((links, shown)) = edges {
+                        draw_edges(canvas, scene, vp, &paint, links, shown, &across);
                     }
                     draw_points(canvas, scene, vp, &paint, radius);
                 },
@@ -754,44 +758,93 @@ fn draw_average(
     }
 }
 
+/// The links in view: by link community, or on a round's grouping in
+/// their ends' group, those `shown` takes, links between two groups on top.
 fn draw_edges(
     canvas: &mut Canvas,
     scene: &Scene,
     vp: &Viewport,
     paint: &Paint,
-    edges: &Edges,
-    index: &EdgeIndex,
+    links: &Links,
+    shown: EdgesShown,
     across: &[i64],
 ) {
+    let (edges, index) = (&*links.edges, &*links.index);
     let (xs, ys) = canvas.bins(scene.grid, vp, index.max_len);
     let (x, y) = (&scene.geom.x, &scene.geom.y);
+    let ends = |e: usize| {
+        (
+            x[edges.a[e] as usize],
+            y[edges.a[e] as usize],
+            x[edges.b[e] as usize],
+            y[edges.b[e] as usize],
+        )
+    };
+    let mut on_top = Vec::new();
     for iy in ys {
         for ix in xs.clone() {
             for &e in index.edges(ix, iy) {
                 let e = e as usize;
-                let (a, b) = (edges.a[e] as usize, edges.b[e] as usize);
-                let (ax, ay) = vp.to_px(x[a], y[a]);
-                let (bx, by) = vp.to_px(x[b], y[b]);
+                let (ax, ay, bx, by) = ends(e);
+                let (_, ay) = vp.to_px(ax, ay);
+                let (_, by) = vp.to_px(bx, by);
                 if ay.max(by) < canvas.r0 as f32 || ay.min(by) >= canvas.r1 as f32 {
                     continue;
                 }
-                let community = edges.community[e];
-                if !paint.in_focus(community) {
-                    continue;
-                }
-                let c = paint.community(community);
-                let steps = (bx - ax).abs().max((by - ay).abs()).ceil().max(1.) as usize;
-                let steep = (by - ay).abs() > (bx - ax).abs();
-                for s in 0..=steps {
-                    let t = s as f32 / steps as f32;
-                    let (px, py) = (ax + t * (bx - ax), ay + t * (by - ay));
-                    let (px, py) = (px.floor() as i64, py.floor() as i64);
-                    for &o in across {
-                        let (qx, qy) = if steep { (px + o, py) } else { (px, py + o) };
-                        canvas.blend(qx, qy, c, 0.85);
+                let colour = match &links.ends {
+                    None => {
+                        let c = edges.community[e];
+                        paint.in_focus(c).then(|| paint.community(c))
                     }
+                    // A link with an end in no group is neither kind.
+                    Some(groups) => match groups[e] {
+                        NO_CLUSTER => None,
+                        HETEROTYPIC => {
+                            // Shown when either end's group is focused.
+                            let (a, b) = (edges.a[e] as usize, edges.b[e] as usize);
+                            let focused = [a, b]
+                                .iter()
+                                .any(|&i| paint.in_focus(scene.comm.cluster[i]));
+                            if shown.draws(true) && focused {
+                                on_top.push(e);
+                            }
+                            None
+                        }
+                        g => (shown.draws(false) && paint.in_focus(g)).then(|| paint.community(g)),
+                    },
+                };
+                if let Some(c) = colour {
+                    draw_line(canvas, vp, ends(e), c, across);
                 }
             }
+        }
+    }
+    let between = paint.theme.text();
+    for e in on_top {
+        draw_line(canvas, vp, ends(e), between, across);
+    }
+}
+
+/// The line between world points `(ax, ay)` and `(bx, by)` in `c`, its
+/// thickness `across` its minor axis.
+fn draw_line(
+    canvas: &mut Canvas,
+    vp: &Viewport,
+    (ax, ay, bx, by): (f32, f32, f32, f32),
+    c: Rgb,
+    across: &[i64],
+) {
+    let (ax, ay) = vp.to_px(ax, ay);
+    let (bx, by) = vp.to_px(bx, by);
+    let steps = (bx - ax).abs().max((by - ay).abs()).ceil().max(1.) as usize;
+    let steep = (by - ay).abs() > (bx - ax).abs();
+    for s in 0..=steps {
+        let t = s as f32 / steps as f32;
+        let (px, py) = (ax + t * (bx - ax), ay + t * (by - ay));
+        let (px, py) = (px.floor() as i64, py.floor() as i64);
+        for &o in across {
+            let (qx, qy) = if steep { (px + o, py) } else { (px, py + o) };
+            canvas.blend(qx, qy, c, 0.85);
         }
     }
 }

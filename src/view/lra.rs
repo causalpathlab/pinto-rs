@@ -426,7 +426,7 @@ impl OnMap {
                 PairShow::Classes => Layer::Argmax,
                 PairShow::Exposure => Layer::Gene,
             },
-            edges: false,
+            edges: None,
             focus: None,
             theme: base.theme(),
             point,

@@ -6,9 +6,10 @@ const DARK: Theme = Theme::Dark;
 fn palette(k: usize) -> Vec<[u8; 3]> {
     DARK.palette(k)
 }
-use crate::view::data::{Communities, Geometry, Rect};
-use crate::view::index::{Grid, Pyramid};
+use crate::view::data::{Communities, Edges, Geometry, Rect, NO_CLUSTER};
+use crate::view::index::{EdgeIndex, Grid, Links, Pyramid, HETEROTYPIC};
 use crate::view::render::{mode, render, zoom, Frame, Layer, Mode, Scene, Style, Viewport};
+use crate::view::EdgesShown;
 
 /// A 40×40 lattice filling x,y in 0..40, one community per 10-wide stripe.
 fn fixture() -> (Geometry, Communities, Grid, Pyramid) {
@@ -44,7 +45,7 @@ fn draw_styled(w: usize, window: Rect, focus: Option<&[bool]>, point: f32) -> Fr
     };
     let style = Style {
         layer: Layer::Argmax,
-        edges: false,
+        edges: None,
         focus,
         theme: DARK,
         point,
@@ -181,7 +182,7 @@ fn a_gene_s_average_leaves_out_the_cells_without_a_level() {
     };
     let style = Style {
         layer: Layer::Gene,
-        edges: false,
+        edges: None,
         focus: None,
         theme: DARK,
         point: 1.,
@@ -253,4 +254,92 @@ fn limits_the_wrong_way_round_still_hold() {
     zoom(&mut cam, 2., None, (4., 0.5));
     let upp = Viewport::of(&cam).upp;
     assert!((0.5..=4.).contains(&upp), "{upp}");
+}
+
+/// On a grouping, a link within one group is drawn in its colour and one
+/// between two in the page's text colour; `edges_shown` drops either. By
+/// link community every link is drawn.
+#[test]
+fn links_are_drawn_by_the_groups_of_their_ends() {
+    let (geom, comm, grid, pyramid) = fixture();
+    // Groups are x mod 4: a cell's neighbour below is in its group, the
+    // one beside it is not.
+    let i = 5 * 40 + 5;
+    let (below, beside) = (i + 40, i + 1);
+    let mut edges = Edges::default();
+    for j in [below, beside] {
+        edges.push(&geom, &geom.names[i], &geom.names[j], 0);
+    }
+    let index = EdgeIndex::build(&grid, &geom.x, &geom.y, &edges);
+    let by_community = Links {
+        edges: edges.into(),
+        index: index.into(),
+        ends: None,
+        kinds: (0, 0),
+    };
+    let by_ends = by_community.by_ends(&comm.cluster);
+    assert_eq!(by_ends.kinds, (1, 1));
+    let vp = Viewport::fit(Rect::from_corners(4., 4., 7., 7.), 150, 150);
+    let middle = |j: usize| {
+        let (x, y) = vp.to_px(0.5 * (geom.x[i] + geom.x[j]), 0.5 * (geom.y[i] + geom.y[j]));
+        (x as usize, y as usize)
+    };
+    let drawn = |links: &Links, shown| {
+        let scene = Scene {
+            geom: &geom,
+            comm: &comm,
+            grid: &grid,
+            pyramid: &pyramid,
+            edges: Some(links),
+            spacing: 1.,
+        };
+        let style = Style {
+            layer: Layer::Argmax,
+            edges: Some(shown),
+            focus: None,
+            theme: DARK,
+            point: 1.,
+        };
+        let frame = render(&scene, &vp, &style, &palette(4));
+        let at = |(x, y)| pixel(&frame, x, y);
+        (at(middle(below)), at(middle(beside)))
+    };
+    let background = DARK.background();
+    let (within, between) = drawn(&by_ends, EdgesShown::All);
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(&b).all(|(&p, &q)| p.abs_diff(q) < 48);
+    assert!(
+        near(within, palette(4)[comm.cluster[i] as usize]),
+        "{within:?}"
+    );
+    assert!(near(between, DARK.text()), "{between:?}");
+    assert_eq!(drawn(&by_ends, EdgesShown::Heterotypic).0, background);
+    assert_eq!(drawn(&by_ends, EdgesShown::Isotypic).1, background);
+    let (within, between) = drawn(&by_community, EdgesShown::Heterotypic);
+    assert_ne!(within, background);
+    assert_ne!(between, background);
+}
+
+/// A link is in its ends' group when they share one, between groups when
+/// they do not, and in none when an end has none; the counts take only
+/// the links asked for.
+#[test]
+fn links_take_the_groups_of_their_ends() {
+    let geom = Geometry::from_cells(synth_cells(4, 1));
+    let grid = Grid::build(&geom.x, &geom.y, geom.bounds(), 6.);
+    let mut edges = Edges::default();
+    for (l, r) in [("c0", "c1"), ("c1", "c2"), ("c2", "c3")] {
+        edges.push(&geom, l, r, 7);
+    }
+    let index = EdgeIndex::build(&grid, &geom.x, &geom.y, &edges);
+    let links = Links {
+        edges: edges.into(),
+        index: index.into(),
+        ends: None,
+        kinds: (0, 0),
+    };
+    assert_eq!(links.ends_count(|_| true), None);
+    let by_ends = links.by_ends(&[2, 2, 5, NO_CLUSTER]);
+    assert_eq!(by_ends.ends, Some(vec![2, HETEROTYPIC, NO_CLUSTER]));
+    assert_eq!(by_ends.kinds, (1, 1));
+    assert_eq!(by_ends.ends_count(|e| e > 0), Some((0, 1)));
 }

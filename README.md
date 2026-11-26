@@ -1125,7 +1125,18 @@ install it with HDF5 as pinto was: `cargo install lupin-rs --features hdf5`.
 
 ```sh
 pinto view out --round out.final.a1.r1.lupin.json --show types --png types.png
+pinto view out --round out.final.a1.r1.lupin.json --show types --edges \
+    --png interfaces.png                          # links by their ends' types
+pinto view out --round out.final.a1.r1.lupin.json --show types --edges \
+    --edges-shown heterotypic --png between.png   # only links between types
 ```
+
+With `--edges` (`e` in the viewer) on a round's types or clusters, each link
+of the level the round annotated is drawn by the groups of its two ends: a
+link within one group (isotypic) in that group's colour, and one between two
+groups (heterotypic) in the page's text colour, on top. `--edges-shown
+heterotypic|isotypic` (view_map's `edges_shown`) draws only one kind; the side
+panel and view_map's reply count both, on the tissue and in the window.
 
 #### Ligand-receptor pairs (`pinto lra`)
 

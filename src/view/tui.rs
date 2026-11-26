@@ -207,6 +207,8 @@ struct App<'a> {
     layer: Layer,
     community: usize,
     edges: bool,
+    /// Which of a round's grouping's links `edges` draws (`--edges-shown`).
+    edges_shown: super::EdgesShown,
     /// Cell disc size, × the default (`<`/`>`).
     point: f32,
     /// Batch tile last jumped to.
@@ -353,6 +355,7 @@ impl<'a> App<'a> {
             layer: args.layer,
             community,
             edges: args.edges,
+            edges_shown: args.edges_shown,
             point: args.point_size,
             tile: None,
             theme: args.theme,

@@ -74,6 +74,11 @@ impl Rect {
         self.y1 - self.y0
     }
 
+    /// Whether the point `(x, y)` is in the box, edges included.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        (self.x0..=self.x1).contains(&x) && (self.y0..=self.y1).contains(&y)
+    }
+
     pub fn union(&self, o: &Rect) -> Rect {
         Rect {
             x0: self.x0.min(o.x0),
