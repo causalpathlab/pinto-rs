@@ -1011,7 +1011,8 @@ the row has room. Tab or shift-enter moves to the next screen (shift-enter
 only where the terminal can tell it apart from enter). Once a run ends, the
 methods it finished are unqueued (marked ✓), so ctrl+r again, or `r` on the
 Run screen, runs only the ones stopped, failed or not reached; space queues
-one again. Each reruns into its old `--out`, after first clearing the script
+one again. `X` on the Run screen stops the fits; `?` lists every key of the
+screen; `q` quits (once nothing runs) and Esc closes a popup. Each reruns into its old `--out`, after first clearing the script
 and batch files its unfinished run left there.
 
 ```sh
@@ -1106,7 +1107,7 @@ install it with HDF5 as pinto was: `cargo install lupin-rs --features hdf5`.
 - `R` relabels the round's clusters, one at a time (`→`/`←`, or click):
   `↑`/`↓` choose a gene, `y` makes it a marker of the working type (`Tab`
   picks the type), `n` drops it from its type, space clears the mark;
-  `L` labels, `K` keeps the label, `M` merges (`↑`/`↓` and space, or clicks,
+  Enter labels, `K` keeps the label, `M` merges (`↑`/`↓` and space, or clicks,
   choose the clusters; Enter names them), `u` takes a decision back. Each
   needs a rationale. Decisions stay in a draft beside the round until `S`
   sends them to `lupin relabel --next`, after a confirmation; `P` previews
@@ -1137,11 +1138,11 @@ first pair drawn reads the run's receivers once (a pass over its data); each
 pair after that reads two genes.
 
 Space or `m` marks pairs, and `M` marks all the list shows (one gene's
-pairs after `/`); `L` runs `pinto lra --only` on the marked ones,
+pairs after `/`); ctrl+r runs `pinto lra --only` on the marked ones,
 or on the pair under the cursor when none is marked, in the background beside
 the run (`{prefix}.lra.only-<tag>.parquet`, its script
 `{prefix}.lra.only-<tag>.cmd.sh`). The panel shows its progress bar, `X` stops
-it, and its table opens in the list when it is done. On a run without an lra table, `I` then `L` runs the full `pinto lra`.
+it, and its table opens in the list when it is done. On a run without an lra table, `I` then ctrl+r runs the full `pinto lra`.
 `s` saves the pair's map, and its curve when shown, as PNG and PDF with the
 `pinto view --pair` command that redraws them.
 
@@ -1156,8 +1157,9 @@ place (or Shift and an arrow) to rearrange the batches. Once a batch is
 open, the grid keeps the map's zoom and pan: every tile shows its own batch
 the way the map shows that one. In the grid, the wheel (around the pointer),
 `z`/`Z` and `<`/`>` change only the batch pointed at, which then keeps its
-own zoom and point size (the side panel shows them); hold Alt to change
-every batch together. `0` fits every batch again and drops their own
+own zoom and point size (the side panel shows them); `a` switches them to
+change every batch together, and back (holding Alt does the same where the
+terminal sends it; a stock macOS terminal does not). `0` fits every batch again and drops their own
 settings, and opening a batch opens it at its tile's zoom. With the structure plot on
 (`H`), each tile has its own batch's bars under it, on one stack order across
 batches; click a community in them to see where it lies. `s` saves the grid

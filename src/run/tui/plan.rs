@@ -316,7 +316,8 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.confirm = None,
+            KeyCode::Esc => self.confirm = None,
+            KeyCode::Char('q') => self.ask_quit(),
             KeyCode::Char('c') => {
                 let text = self.copy_text();
                 self.message = Some(match legume_tui::keys::copy(&text, self.attached) {

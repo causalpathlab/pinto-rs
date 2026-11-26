@@ -177,6 +177,8 @@ pub(crate) struct App {
     /// The fit under the cursor on the run screen.
     job_row: usize,
     message: Option<String>,
+    /// `?`: every key of the screen in a popup, until the next key.
+    help: bool,
     quit: bool,
     /// The manifest to open in `pinto view` once the terminal is given back.
     view: Option<PathBuf>,
@@ -398,6 +400,7 @@ impl App {
             attached: true,
             job_row: 0,
             message: None,
+            help: false,
             quit: false,
             view: None,
         })
@@ -422,7 +425,10 @@ impl App {
             return;
         }
         self.message = None;
-        if self.editor.is_some() {
+        if self.help {
+            // Any key closes the keys, and does nothing else.
+            self.help = false;
+        } else if self.editor.is_some() {
             self.editor_key(k);
         } else if self.labels.is_some() {
             self.labels_key(k);
@@ -458,14 +464,8 @@ impl App {
                 }
             }
             _ if legume_tui::is_run_key(&k) => self.open_confirm(),
-            KeyCode::Char('q') => {
-                if self.running() {
-                    self.message =
-                        Some("fits are running: s stops them, ctrl-c stops and quits".into());
-                } else {
-                    self.quit = true;
-                }
-            }
+            KeyCode::Char('q') => self.ask_quit(),
+            KeyCode::Char('?') => self.help = true,
             _ => return false,
         }
         true
@@ -534,7 +534,8 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Esc | KeyCode::Char('q' | 'e') => self.labels = None,
+            KeyCode::Esc | KeyCode::Char('e') => self.labels = None,
+            KeyCode::Char('q') => self.ask_quit(),
             KeyCode::Enter => {
                 let (row, cursor) = (l.row, l.cursor);
                 if let Some(label) = label_at(&self.pairs[row], cursor) {
@@ -547,6 +548,17 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// `q`, on any screen or popup: quit, but not over running fits.
+    pub(super) fn ask_quit(&mut self) {
+        if self.running() {
+            self.message = Some(
+                "fits are running: X on the Run screen stops them, ctrl-c stops and quits".into(),
+            );
+        } else {
+            self.quit = true;
         }
     }
 
@@ -650,7 +662,7 @@ impl App {
             return;
         }
         match k.code {
-            KeyCode::Char('s') => {
+            KeyCode::Char('X') => {
                 q.stop();
                 self.message = Some("stopping".into());
             }
@@ -659,7 +671,7 @@ impl App {
                 let job = &q.jobs[self.job_row.min(last)];
                 let state = q.states().get(self.job_row.min(last)).cloned();
                 if self.running() {
-                    self.message = Some("still running: s stops, or wait for the fits".into());
+                    self.message = Some("still running: X stops, or wait for the fits".into());
                 } else if state == Some(jobs::State::Done) && job.view().exists() {
                     self.view = Some(job.view().to_path_buf());
                     self.quit = true;
@@ -711,6 +723,10 @@ pub(super) fn first_free(base: &str, taken: impl Fn(&str) -> bool) -> String {
 #[cfg(test)]
 #[path = "tests/app.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/keys.rs"]
+mod key_tests;
 
 /// The label at `i` of a data row's batch file, in the order listed.
 fn label_at(p: &Pair, i: usize) -> Option<String> {

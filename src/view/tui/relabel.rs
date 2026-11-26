@@ -21,7 +21,7 @@ pub const RELABEL_HELP: &[&str] = &[
     " ↑ ↓ or click  choose a gene",
     " y marker of the working type",
     " n drop it  space clear  Tab type",
-    " L label  K keep  M merge  u undo",
+    " Enter label  K keep  M merge  u undo",
     " P preview  S apply (writes a round)",
     " z/Z zoom  s save  ? all keys",
     " R or Esc leave (the draft is kept)",
@@ -113,7 +113,7 @@ impl App<'_> {
         self.status = if staged > 0 {
             format!("relabelling; {staged} decisions staged earlier")
         } else {
-            "relabelling: → ← clusters, ↑ ↓ genes, y/n marks, L label".into()
+            "relabelling: → ← clusters, ↑ ↓ genes, y/n marks, Enter labels".into()
         };
         Ok(())
     }
@@ -199,7 +199,7 @@ impl App<'_> {
             KeyCode::Char('y') => self.mark(true),
             KeyCode::Char('n') => self.mark(false),
             KeyCode::Char(' ') => self.clear_mark(),
-            KeyCode::Char('L') => self.ask(false),
+            KeyCode::Enter => self.ask(false),
             KeyCode::Char('K') => self.ask(true),
             KeyCode::Char('M') => self.begin_merge(),
             KeyCode::Char('u') => self.unstage(),
@@ -209,10 +209,11 @@ impl App<'_> {
                 self.gene = None;
                 self.need_map = true;
             }
-            KeyCode::Char('l' | 'k' | 'm') => {
-                self.status = "decisions are uppercase: L labels, K keeps, M merges".into();
+            KeyCode::Char('k' | 'm') => {
+                self.status = "decisions: Enter labels, K keeps, M merges".into();
             }
-            KeyCode::Char('c' | 'C' | ',' | '.' | 'H' | 'A' | 'r' | '4') | KeyCode::Home => {
+            KeyCode::Char('c' | 'C' | 'l' | 'L' | ',' | '.' | 'H' | 'A' | 'r' | '4')
+            | KeyCode::Home => {
                 self.status = "leave relabel mode first (R)".into();
             }
             _ => return Ok(false),
@@ -390,7 +391,7 @@ impl App<'_> {
         self.step_gene(1);
     }
 
-    /// `L` (or `K` to keep the label): ask for a label and a rationale.
+    /// Enter (or `K` to keep the label): ask for a label and a rationale.
     fn ask(&mut self, keep: bool) {
         let (Some(r), Some(round)) = (self.relabel.as_ref(), self.round.as_ref()) else {
             return;
@@ -410,7 +411,7 @@ impl App<'_> {
         };
         let (what, label, field) = if keep {
             let Some(label) = digest.label.clone() else {
-                self.status = format!("K{id} has no label to keep; L labels it");
+                self.status = format!("K{id} has no label to keep; Enter labels it");
                 return;
             };
             (Staging::Keep(id), label, 1)

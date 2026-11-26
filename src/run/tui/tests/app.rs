@@ -32,7 +32,7 @@ fn cli() -> clap::Command {
     c
 }
 
-fn app(dir: &Path) -> App {
+pub(super) fn app(dir: &Path) -> App {
     let mut a = App {
         here: dir.to_path_buf(),
         ..App::new(cli(), dir.to_path_buf()).unwrap()
@@ -45,7 +45,7 @@ fn app(dir: &Path) -> App {
     a
 }
 
-fn key(a: &mut App, c: KeyCode) {
+pub(super) fn key(a: &mut App, c: KeyCode) {
     a.key(KeyEvent::new(c, KeyModifiers::NONE));
 }
 

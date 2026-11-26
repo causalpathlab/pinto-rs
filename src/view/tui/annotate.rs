@@ -378,9 +378,11 @@ impl App<'_> {
             Modal::Save(_) => unreachable!("handled above"),
             Modal::Confirm(lines) => match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => self.send_draft(false),
-                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
+                KeyCode::Char('n') | KeyCode::Esc => {
                     self.status = "not applied; the draft is kept".into();
                 }
+                // `q` quits here as everywhere; the draft stays beside the round.
+                KeyCode::Char('q') => self.quit = true,
                 _ => self.modal = Some(Modal::Confirm(lines)),
             },
         }

@@ -9,8 +9,8 @@
 //! Once a batch is open (a click, or `b`), the grid keeps the map's zoom
 //! and pan: every tile shows its own batch as the map shows that one,
 //! relative to each batch's fitted frame. In the grid, zoom and point size
-//! go to the batch pointed at, which then keeps its own; with Alt, to
-//! every batch. `0` fits them all again.
+//! go to the batch pointed at, which then keeps its own; after `a` (or
+//! with Alt), to every batch. `0` fits them all again.
 
 use super::super::render::{self, Frame, Style, Viewport};
 use super::super::scalebar;
@@ -83,6 +83,9 @@ pub struct Grid {
     structure: Option<(usize, Vec<Option<Structure>>)>,
     /// Each batch's bars as last drawn, by batch, with what for.
     bars: HashMap<usize, (BarsKey, Drawn)>,
+    /// `a`: zoom and point size change every batch, not the one pointed
+    /// at, as Alt does where the terminal sends it.
+    pub(super) all: bool,
 }
 
 impl Grid {
@@ -251,7 +254,7 @@ impl App<'_> {
             }
             self.grid.on = true;
             self.view = plots::View::Map;
-            self.status = "every batch: click opens, drag moves; zoom, < >: one (alt: all)".into();
+            self.status = "every batch: click opens, drag moves; zoom, < >: one (a: all)".into();
         }
         self.need_map = true;
     }
@@ -336,7 +339,7 @@ impl App<'_> {
         let vp = Viewport::of(&cam);
         self.grid.own.entry(b).or_default().cam = Some(Camera::of(&vp, frame));
         let name = &self.base.geom.tiles[b].name;
-        self.status = format!("{name} zoomed on its own  alt: every batch  0 fits all");
+        self.status = format!("{name} zoomed on its own  a: every batch  0 fits all");
         self.need_map = true;
     }
 
@@ -385,7 +388,7 @@ impl App<'_> {
                 let next = step_point(self.own_point(b), by);
                 self.grid.own.entry(b).or_default().point = Some(next);
                 let name = &self.base.geom.tiles[b].name;
-                self.status = format!("{name} points ×{next:.2}  alt: every batch");
+                self.status = format!("{name} points ×{next:.2}  a: every batch");
                 self.need_map = true;
             }
             None => {
@@ -408,7 +411,7 @@ impl App<'_> {
             .count()
             .max(1) as isize;
         let at = self.grid.hover;
-        let all = key.modifiers.contains(KeyModifiers::ALT);
+        let all = self.grid.all || key.modifiers.contains(KeyModifiers::ALT);
         let by = match key.code {
             KeyCode::Left => Some(-1),
             KeyCode::Right => Some(1),
@@ -437,6 +440,15 @@ impl App<'_> {
                 KeyCode::Char('<') => self.grid_points(1. / step, at, all),
                 KeyCode::Char('>') => self.grid_points(step, at, all),
                 KeyCode::Char('0') => self.fit_all(),
+                KeyCode::Char('a') => {
+                    self.grid.all = !self.grid.all;
+                    self.status = if self.grid.all {
+                        "zoom, < >: every batch  (a: the one pointed at)"
+                    } else {
+                        "zoom, < >: the batch pointed at  (a: every batch)"
+                    }
+                    .into();
+                }
                 _ => return false,
             }
         }
@@ -479,7 +491,7 @@ impl App<'_> {
             .iter()
             .position(|s| s.tile.contains(x, y))
             .filter(|_| inside);
-        let all = m.modifiers.contains(KeyModifiers::ALT);
+        let all = self.grid.all || m.modifiers.contains(KeyModifiers::ALT);
         match (m.kind, k) {
             (MouseEventKind::Moved, _) => self.grid.hover = k,
             (MouseEventKind::ScrollUp, Some(p)) => {
