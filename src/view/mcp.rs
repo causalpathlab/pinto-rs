@@ -11,8 +11,8 @@ use super::gene::{GeneMap, Source};
 use super::lra::{self as lra_layer, LraView, PairShow};
 use super::render::{Layer, Style, Viewport};
 use super::round::{round_name, Round};
-use super::EdgesShown;
 use super::{lupin, markers, scalebar, Base, Level, Show, FIT_MARGIN};
+use super::{EdgesShown, FigureLook};
 use crate::mcp::{parse, shown_path};
 use clap::ValueEnum;
 use legume_mcp::{Call, Content, Handler, ToolSpec};
@@ -77,6 +77,8 @@ pub(super) struct Open {
     edges: bool,
     /// Which of a round's grouping's links `edges` draws.
     edges_shown: EdgesShown,
+    /// Heterotypic colour, edge width and cell opacity.
+    look: FigureLook,
     point: f32,
     /// The world window asked for; the map drawn covers it.
     window: Rect,
@@ -144,7 +146,10 @@ pub(super) struct MapArgs {
     clip: Option<f32>,
     edges: Option<bool>,
     edges_shown: Option<String>,
+    heterotypic_colour: Option<String>,
+    edge_width: Option<f32>,
     point_size: Option<f32>,
+    point_alpha: Option<f32>,
     theme: Option<String>,
     bbox: Option<[f32; 4]>,
     fit: Option<bool>,
@@ -203,6 +208,7 @@ impl Open {
             clip: 99.,
             edges: false,
             edges_shown: EdgesShown::All,
+            look: FigureLook::default(),
             point: 1.,
             window,
             drawn: None,
@@ -383,6 +389,7 @@ impl Open {
             Some(s) => value_enum(s, "edges_shown")?,
             None => self.edges_shown,
         };
+        let look = next_look(self.look, a)?;
         let comm = &level.comm;
         let mut layer = if regrouped {
             self.layer.fit(comm)
@@ -453,6 +460,7 @@ impl Open {
             focus,
             edges,
             edges_shown,
+            look,
             point,
             source,
             clip,
@@ -470,7 +478,7 @@ impl Open {
             super::repalette(&self.base, theme, &mut self.levels, self.round.as_mut());
         }
         (self.layer, self.focus, self.point) = (n.layer, n.focus, n.point);
-        (self.edges, self.edges_shown) = (n.edges, n.edges_shown);
+        (self.edges, self.edges_shown, self.look) = (n.edges, n.edges_shown, n.look);
         (self.source, self.clip) = (n.source, n.clip);
         if let Some(gene) = n.gene {
             self.gene = gene;
@@ -531,13 +539,14 @@ impl Open {
             focus: self.focus(),
             theme: self.base.theme(),
             point: self.point,
+            look: self.look,
         }
     }
 
     fn render(&self, vp: &Viewport) -> super::render::Frame {
         if let Some(on) = self.pair_on_map() {
             let lra = self.lra.as_ref().expect("a pair is drawn");
-            let (level, style, gene) = on.drawn(&self.base, lra.show, self.point);
+            let (level, style, gene) = on.drawn(&self.base, lra.show, self.point, self.look);
             return self.base.render(level, &style, gene, vp);
         }
         self.base
@@ -571,7 +580,10 @@ impl Open {
             clip: self.clip,
             edges: self.edges,
             edges_shown: self.edges_shown,
+            heterotypic_colour: self.look.heterotypic.map(hex),
+            edge_width: self.look.edge_width,
             point_size: self.point,
+            point_alpha: self.look.point_alpha,
             bbox: rect(self.window),
         }
     }
@@ -648,7 +660,10 @@ impl Open {
             "edges": self.edges,
             "edges_shown": super::value_name(&self.edges_shown),
             "links": self.links_shown(vp),
+            "heterotypic_colour": self.look.heterotypic.map(hex),
+            "edge_width": self.look.edge_width,
             "point_size": self.point,
+            "point_alpha": self.look.point_alpha,
             "theme": super::value_name(&theme),
             "image": [vp.w, vp.h],
             "window": rect(vp.window()),
@@ -678,7 +693,7 @@ impl Open {
         };
         let (iso, hetero) = links.kinds;
         json!({
-            "heterotypic_colour": hex(self.base.theme().text()),
+            "heterotypic_colour": hex(self.look.heterotypic_on(self.base.theme())),
             "tissue": {"isotypic": iso, "heterotypic": hetero},
             "window": {"isotypic": iso_in, "heterotypic": hetero_in},
         })
@@ -835,6 +850,25 @@ impl Open {
     }
 }
 
+/// `look` after `a`: a heterotypic colour of "" is the
+/// page's text again.
+fn next_look(mut look: FigureLook, a: &MapArgs) -> anyhow::Result<FigureLook> {
+    match a.heterotypic_colour.as_deref() {
+        Some("") => look.heterotypic = None,
+        Some(c) => {
+            look.heterotypic = Some(super::args::parse_colour(c).map_err(anyhow::Error::msg)?)
+        }
+        None => {}
+    }
+    if let Some(w) = a.edge_width {
+        look.edge_width = super::args::check_edge_width(w).map_err(anyhow::Error::msg)?;
+    }
+    if let Some(x) = a.point_alpha {
+        look.point_alpha = super::args::check_point_alpha(x).map_err(anyhow::Error::msg)?;
+    }
+    Ok(look)
+}
+
 /// What a `view_map` call changes the view to.
 struct Next {
     at: usize,
@@ -846,6 +880,7 @@ struct Next {
     focus: Vec<bool>,
     edges: bool,
     edges_shown: EdgesShown,
+    look: FigureLook,
     point: f32,
     source: Source,
     clip: f32,

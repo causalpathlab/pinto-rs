@@ -1,7 +1,7 @@
 //! Writing a still figure of a view to a file, without a terminal.
 
 use super::args::{EdgesShown, Show, ViewArgs};
-use super::color::Theme;
+use super::color::{hex, Theme};
 use super::data::Rect;
 use super::gene::{GeneMap, Source};
 use super::legend_swatch;
@@ -70,6 +70,7 @@ pub(super) fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
         focus: focus.as_deref(),
         theme,
         point: args.point_size,
+        look: args.look(),
     };
     let gene = match args.gene.as_deref() {
         Some(feature) => {
@@ -175,7 +176,7 @@ fn write_pair_still(args: &ViewArgs, theme: Theme, pair: &str) -> anyhow::Result
         let level = base.run.level_index(args.level.as_deref())?;
         let on = view.on_map(&base, level)?.expect("a pair is selected");
         let vp = still_viewport(args, &base)?;
-        let (level, style, gene) = on.drawn(&base, args.pair_show, args.point_size);
+        let (level, style, gene) = on.drawn(&base, args.pair_show, args.point_size, args.look());
         write_outputs(
             &base,
             level,
@@ -261,14 +262,24 @@ impl Still<'_> {
         if !focused.is_empty() {
             flag("--focus", Some(ids(&self.level.comm, &focused, ",")));
         }
+        let look = style.look;
         if let Some(shown) = style.edges {
             flag("--edges", None);
             if shown != EdgesShown::All {
                 flag("--edges-shown", Some(value_name(&shown)));
             }
+            if let Some(c) = look.heterotypic {
+                flag("--heterotypic-colour", Some(hex(c)));
+            }
+            if look.edge_width != 1. {
+                flag("--edge-width", Some(look.edge_width.to_string()));
+            }
         }
         if style.point != 1. {
             flag("--point-size", Some(style.point.to_string()));
+        }
+        if look.point_alpha != 1. {
+            flag("--point-alpha", Some(look.point_alpha.to_string()));
         }
         flag("--theme", Some(value_name(&style.theme)));
         if let Some((round, show)) = self.round {

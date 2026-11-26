@@ -9,6 +9,17 @@ pub fn hex([r, g, b]: Rgb) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
+/// `#rrggbb` (the `#` optional) as a colour; `None` when it is not one.
+pub fn parse_hex(s: &str) -> Option<Rgb> {
+    let s = s.trim();
+    let h = s.strip_prefix('#').unwrap_or(s);
+    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
 /// The map's colours on a dark or a light background.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Theme {

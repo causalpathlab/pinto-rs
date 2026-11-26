@@ -9,7 +9,7 @@ fn palette(k: usize) -> Vec<[u8; 3]> {
 use crate::view::data::{Communities, Edges, Geometry, Rect, NO_CLUSTER};
 use crate::view::index::{EdgeIndex, Grid, Links, Pyramid, HETEROTYPIC};
 use crate::view::render::{mode, render, zoom, Frame, Layer, Mode, Scene, Style, Viewport};
-use crate::view::EdgesShown;
+use crate::view::{EdgesShown, FigureLook};
 
 /// A 40×40 lattice filling x,y in 0..40, one community per 10-wide stripe.
 fn fixture() -> (Geometry, Communities, Grid, Pyramid) {
@@ -49,6 +49,7 @@ fn draw_styled(w: usize, window: Rect, focus: Option<&[bool]>, point: f32) -> Fr
         focus,
         theme: DARK,
         point,
+        look: FigureLook::default(),
     };
     render(&scene, &Viewport::fit(window, w, w), &style, &palette(4))
 }
@@ -186,6 +187,7 @@ fn a_gene_s_average_leaves_out_the_cells_without_a_level() {
         focus: None,
         theme: DARK,
         point: 1.,
+        look: FigureLook::default(),
     };
     let window = Rect {
         x0: 0.,
@@ -284,7 +286,7 @@ fn links_are_drawn_by_the_groups_of_their_ends() {
         let (x, y) = vp.to_px(0.5 * (geom.x[i] + geom.x[j]), 0.5 * (geom.y[i] + geom.y[j]));
         (x as usize, y as usize)
     };
-    let drawn = |links: &Links, shown| {
+    let frame_of = |links: &Links, vp: &Viewport, shown, look: FigureLook| {
         let scene = Scene {
             geom: &geom,
             comm: &comm,
@@ -299,8 +301,12 @@ fn links_are_drawn_by_the_groups_of_their_ends() {
             focus: None,
             theme: DARK,
             point: 1.,
+            look,
         };
-        let frame = render(&scene, &vp, &style, &palette(4));
+        render(&scene, vp, &style, &palette(4))
+    };
+    let drawn = |links: &Links, shown| {
+        let frame = frame_of(links, &vp, shown, FigureLook::default());
         let at = |(x, y)| pixel(&frame, x, y);
         (at(middle(below)), at(middle(beside)))
     };
@@ -317,6 +323,59 @@ fn links_are_drawn_by_the_groups_of_their_ends() {
     let (within, between) = drawn(&by_community, EdgesShown::Heterotypic);
     assert_ne!(within, background);
     assert_ne!(between, background);
+
+    // A colour of their own, wider lines, and cells faded so lines show.
+    let red = [215, 25, 28];
+    let look = FigureLook {
+        heterotypic: Some(red),
+        ..FigureLook::default()
+    };
+    let all = EdgesShown::All;
+    let (x, y) = middle(beside);
+    let frame = frame_of(&by_ends, &vp, all, look);
+    assert!(near(pixel(&frame, x, y), red), "{:?}", pixel(&frame, x, y));
+    // The heterotypic line runs across x: a few pixels off it, only a wider
+    // line reaches.
+    let off = (x, y + 4);
+    assert_eq!(pixel(&frame, off.0, off.1), background);
+    let wide = FigureLook {
+        edge_width: 4.,
+        ..look
+    };
+    assert!(near(
+        pixel(&frame_of(&by_ends, &vp, all, wide), off.0, off.1),
+        red
+    ));
+    // Two pixels above the frame's first band edge (row 64): the wide line
+    // carries on into the next band, unbroken.
+    let edge_vp = Viewport::fit(Rect::from_corners(4., 3.76, 7., 6.76), 150, 150);
+    let frame = frame_of(&by_ends, &edge_vp, all, wide);
+    let (mx, my) = edge_vp.to_px(0.5 * (geom.x[i] + geom.x[beside]), geom.y[i]);
+    assert!((60. ..64.).contains(&my), "{my}");
+    for row in my as usize - 3..=my as usize + 3 {
+        let p = pixel(&frame, mx as usize, row);
+        assert!(near(p, red), "row {row}: {p:?}");
+    }
+    let (cx, cy) = vp.to_px(geom.x[i], geom.y[i]);
+    let centre = |f: &Frame| pixel(f, cx as usize, cy as usize);
+    let own = palette(4)[comm.cluster[i] as usize];
+    assert_eq!(centre(&frame_of(&by_ends, &vp, all, look)), own);
+    let faded = FigureLook {
+        point_alpha: 0.5,
+        ..look
+    };
+    let faded = centre(&frame_of(&by_ends, &vp, all, faded));
+    assert!(faded != own && faded != background, "{faded:?}");
+}
+
+#[test]
+fn colours_parse_as_hex() {
+    use crate::view::color::parse_hex;
+    assert_eq!(parse_hex("#d7191c"), Some([215, 25, 28]));
+    assert_eq!(parse_hex("D7191C"), Some([215, 25, 28]));
+    for bad in ["", "#d7191", "#gg0000", "red", "#d7191c00", "#+f0000"] {
+        assert_eq!(parse_hex(bad), None, "{bad}");
+    }
 }
 
 /// A link is in its ends' group when they share one, between groups when

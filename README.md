@@ -1137,6 +1137,16 @@ link within one group (isotypic) in that group's colour, and one between two
 groups (heterotypic) in the page's text colour, on top. `--edges-shown
 heterotypic|isotypic` (view_map's `edges_shown`) draws only one kind; the side
 panel and view_map's reply count both, on the tissue and in the window.
+For a figure, `--heterotypic-colour '#d7191c'` draws the heterotypic links in a
+colour of their own, `--edge-width 2` widens every line, and `--point-alpha 0.5`
+fades the cells so the lines under them show (view_map's `heterotypic_colour`,
+`edge_width`, `point_alpha`):
+
+```sh
+pinto view out --round out.final.a1.r1.lupin.json --show types --edges \
+    --edges-shown heterotypic --heterotypic-colour '#d7191c' --edge-width 2 \
+    --point-alpha 0.6 --width 4000 --png interfaces.png
+```
 
 #### Ligand-receptor pairs (`pinto lra`)
 

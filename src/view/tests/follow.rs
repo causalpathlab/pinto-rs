@@ -19,7 +19,10 @@ fn the_view_followed_is_view_maps_settings() {
         clip: 95.,
         edges: true,
         edges_shown: EdgesShown::Heterotypic,
+        heterotypic_colour: Some("#d7191c".into()),
+        edge_width: 1.5,
         point_size: 2.,
+        point_alpha: 0.5,
         bbox: [0., 1., 10., 11.],
     };
     let mut json = serde_json::to_value(&view).unwrap();

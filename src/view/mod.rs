@@ -32,7 +32,7 @@ mod tests;
 
 use crate::util::cli::value_name;
 use args::{check_clip, check_point_size, POINT_SIZES};
-pub use args::{EdgesShown, Show, ViewArgs};
+pub use args::{EdgesShown, FigureLook, Show, ViewArgs};
 use color::Theme;
 use data::{Communities, Geometry, Run};
 use gene::{Expression, GeneMap, Source};
@@ -84,8 +84,35 @@ struct Followed {
     /// Which of a round's grouping's links `edges` draws.
     #[serde(default)]
     edges_shown: EdgesShown,
+    /// Heterotypic links' colour, `#rrggbb`; none for the page's text.
+    #[serde(default)]
+    heterotypic_colour: Option<String>,
+    #[serde(default = "one")]
+    edge_width: f32,
     point_size: f32,
+    #[serde(default = "one")]
+    point_alpha: f32,
     bbox: [f32; 4],
+}
+
+fn one() -> f32 {
+    1.
+}
+
+impl Followed {
+    /// The figure's look as followed; a value out of its range, or a
+    /// colour that does not parse, is the default.
+    fn look(&self) -> FigureLook {
+        let default = FigureLook::default();
+        FigureLook {
+            heterotypic: self
+                .heterotypic_colour
+                .as_deref()
+                .and_then(color::parse_hex),
+            edge_width: args::check_edge_width(self.edge_width).unwrap_or(default.edge_width),
+            point_alpha: args::check_point_alpha(self.point_alpha).unwrap_or(default.point_alpha),
+        }
+    }
 }
 
 pub fn run_view(args: &ViewArgs) -> anyhow::Result<()> {
@@ -301,6 +328,7 @@ impl Base {
                     focus: None,
                     theme: self.theme(),
                     point: style.point,
+                    look: style.look,
                 };
                 render::render(&scene, vp, &style, &[[255; 3]])
             }

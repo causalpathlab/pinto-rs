@@ -158,6 +158,8 @@ impl App<'_> {
             _ => 0,
         };
         self.edges = self.args.edges;
+        self.edges_shown = self.args.edges_shown;
+        self.look = self.args.look();
         self.point = self.args.point_size;
         self.leave_grid();
         self.fit_all();

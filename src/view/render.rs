@@ -15,7 +15,7 @@
 //! Rows are split into bands drawn in parallel; each band reads only the
 //! grid rows it overlaps.
 
-use super::args::EdgesShown;
+use super::args::{EdgesShown, FigureLook};
 use super::color::{self, Ramp, Rgb, Theme};
 use super::data::{Communities, Geometry, Rect, NO_CLUSTER};
 use super::index::{Grid, Links, Pyramid, PyramidLevel, HETEROTYPIC};
@@ -354,6 +354,8 @@ pub struct Style<'f> {
     /// Disc size, × the default. Above 1, discs are also drawn from
     /// further out, where cells would otherwise be averaged.
     pub point: f32,
+    /// Heterotypic links' colour, edge width and cell opacity.
+    pub look: FigureLook,
 }
 
 /// Colours for one layer, shared by the point, average and bin paths.
@@ -366,6 +368,8 @@ struct Paint<'a> {
     /// Palette in linear light, for mixing.
     linear: Vec<[f32; 3]>,
     ramp: &'static Ramp,
+    /// [`Style::look`].
+    look: FigureLook,
 }
 
 impl<'a> Paint<'a> {
@@ -377,6 +381,7 @@ impl<'a> Paint<'a> {
             palette,
             linear: palette.iter().map(|&c| color::to_linear(c)).collect(),
             ramp: style.layer.ramp(style.theme),
+            look: style.look,
         }
     }
 
@@ -568,7 +573,9 @@ pub fn render(scene: &Scene, vp: &Viewport, style: &Style, palette: &[Rgb]) -> F
             let fill = if edges.is_some() { 0.28 } else { 0.45 };
             let radius = (fill * spacing_px * style.point).max(0.5);
             // Line offsets across its minor axis, for thickness.
-            let width = (0.06 * spacing_px).clamp(1., 3.).round() as i64;
+            let width = ((0.06 * spacing_px).clamp(1., 3.) * style.look.edge_width)
+                .round()
+                .max(1.) as i64;
             let across: Vec<i64> = (0..width).map(|o| o - width / 2).collect();
             for_bands(
                 &mut frame,
@@ -644,12 +651,6 @@ impl Canvas<'_> {
         inside.then(|| ((y as usize - self.r0) * self.w + x as usize) * 4)
     }
 
-    fn put(&mut self, x: i64, y: i64, c: Rgb) {
-        if let Some(o) = self.at(x, y) {
-            self.buf[o..o + 3].copy_from_slice(&c);
-        }
-    }
-
     fn blend(&mut self, x: i64, y: i64, c: Rgb, alpha: f32) {
         if let Some(o) = self.at(x, y) {
             blend(&mut self.buf[o..o + 3], c, alpha);
@@ -699,7 +700,7 @@ fn draw_points(canvas: &mut Canvas, scene: &Scene, vp: &Viewport, paint: &Paint,
                     for dx in -reach..=reach {
                         let (ox, oy) = ((cx + dx) as f32 + 0.5 - px, (cy + dy) as f32 + 0.5 - py);
                         if ox * ox + oy * oy <= r2 {
-                            canvas.put(cx + dx, cy + dy, c);
+                            canvas.blend(cx + dx, cy + dy, c, paint.look.point_alpha);
                         }
                     }
                 }
@@ -748,7 +749,7 @@ fn draw_average(
     // as having none. Every cell counts towards its cover.
     let none = paint.theme.no_community();
     for (a, px) in acc.iter().zip(canvas.buf.as_chunks_mut::<4>().0) {
-        let cover = ((a[3] + a[4]) / full).min(1.);
+        let cover = ((a[3] + a[4]) / full).min(1.) * paint.look.point_alpha;
         if a[3] > 0. {
             let c = [0, 1, 2].map(|ch| color::encode(a[ch] / a[3]));
             blend(&mut px[..3], c, cover);
@@ -770,7 +771,9 @@ fn draw_edges(
     across: &[i64],
 ) {
     let (edges, index) = (&*links.edges, &*links.index);
-    let (xs, ys) = canvas.bins(scene.grid, vp, index.max_len);
+    // A wide line reaches past its ends' rows into neighbouring bands.
+    let half = across.iter().map(|o| o.unsigned_abs()).max().unwrap_or(0) as f32 + 1.;
+    let (xs, ys) = canvas.bins(scene.grid, vp, index.max_len + half * vp.upp);
     let (x, y) = (&scene.geom.x, &scene.geom.y);
     let ends = |e: usize| {
         (
@@ -788,7 +791,7 @@ fn draw_edges(
                 let (ax, ay, bx, by) = ends(e);
                 let (_, ay) = vp.to_px(ax, ay);
                 let (_, by) = vp.to_px(bx, by);
-                if ay.max(by) < canvas.r0 as f32 || ay.min(by) >= canvas.r1 as f32 {
+                if ay.max(by) + half < canvas.r0 as f32 || ay.min(by) - half >= canvas.r1 as f32 {
                     continue;
                 }
                 let colour = match &links.ends {
@@ -819,7 +822,7 @@ fn draw_edges(
             }
         }
     }
-    let between = paint.theme.text();
+    let between = paint.look.heterotypic_on(paint.theme);
     for e in on_top {
         draw_line(canvas, vp, ends(e), between, across);
     }
@@ -888,7 +891,7 @@ fn draw_bins(
             };
             // Bins at the tissue edge hold few cells; they fade in up to
             // half the mean occupancy so the outline reads as an outline.
-            let alpha = (n as f32 / level.full).min(1.);
+            let alpha = (n as f32 / level.full).min(1.) * paint.look.point_alpha;
             blend(&mut line[col * 4..col * 4 + 3], c, alpha);
         }
     }
