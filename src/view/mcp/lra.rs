@@ -23,6 +23,16 @@ pub(in crate::view) struct LraArgs {
     limit: Option<usize>,
     pair: Option<String>,
     show: Option<String>,
+    /// Pairs to mark and unmark, by name, in the table shown.
+    mark: Vec<String>,
+    unmark: Vec<String>,
+    /// Mark every pair the list shows (`M` in the terminal).
+    mark_shown: bool,
+    /// Unmark every pair.
+    clear_marks: bool,
+    /// Start `pinto lra --only` on the marked pairs, or the one selected
+    /// when none is (ctrl+r in the terminal), as a background job.
+    start: bool,
 }
 
 impl Open {
@@ -30,8 +40,27 @@ impl Open {
     /// as asked; with `pair`, that pair on the map from now on. What it is
     /// given stays set, as `view_map`'s arguments do.
     pub(super) fn lra(&mut self, a: LraArgs, cx: &Call) -> anyhow::Result<Vec<Content>> {
+        let start = a.start;
         let reply = self.lra_with(a, &|msg| cx.progress(msg))?;
-        Ok(vec![Content::Json(reply)])
+        let mut out = vec![Content::Json(reply)];
+        if start {
+            out.extend(self.start_marked(cx)?);
+        }
+        Ok(out)
+    }
+
+    /// `start`: `pinto lra --only` on the marked pairs, or the one selected,
+    /// with the options of the table shown, as the terminal's ctrl+r starts
+    /// it, run as `run_lra` runs it (a finished subset is read back).
+    fn start_marked(&self, cx: &Call) -> anyhow::Result<Vec<Content>> {
+        let v = self.lra.as_ref().expect("the layer is read");
+        let only = v.pairs_to_run();
+        anyhow::ensure!(
+            !only.is_empty(),
+            "nothing to run: mark pairs (mark, mark_shown) or select one (pair) first"
+        );
+        let run = &self.base.run;
+        crate::run::lra_subset::start_subset(&run.manifest, &run.prefix, &v.options(), &only, cx)
     }
 
     /// [`Open::lra`]'s work and reply, telling `progress` what it reads.
@@ -87,6 +116,14 @@ impl Open {
             Some(name) => LraView::resolve(table, name)?,
             None => v.selection_in(table),
         };
+        // Marks, by the names the table shown from now on gives its pairs.
+        let named = |name: &String| -> anyhow::Result<String> {
+            let i = LraView::resolve(table, name)?
+                .ok_or_else(|| anyhow::anyhow!("mark and unmark take pair names, not \"\""))?;
+            Ok(table.rows[i].name())
+        };
+        let mark: Vec<String> = a.mark.iter().map(named).collect::<anyhow::Result<_>>()?;
+        let unmark: Vec<String> = a.unmark.iter().map(named).collect::<anyhow::Result<_>>()?;
         // A pair asked for is drawn, and one drawn stays drawn in the
         // table switched to: drawn before anything is kept, as it is the
         // one thing left that can fail.
@@ -104,6 +141,17 @@ impl Open {
         v.selected = selected;
         self.pair_drawn = draw;
         v.set_filter(filter);
+        if a.clear_marks {
+            v.marked.clear();
+        }
+        if a.mark_shown {
+            let shown = v.shown_names();
+            v.marked.extend(shown);
+        }
+        v.marked.extend(mark);
+        for name in &unmark {
+            v.marked.remove(name);
+        }
         if let Some(show) = show {
             v.show = show;
         }
@@ -189,6 +237,7 @@ impl Open {
                 "sort": f.sort.name(),
             },
             "shown": shown.len(),
+            "marked": v.marked.iter().collect::<Vec<_>>(),
             "list": list,
             "selected": selected,
             "show": super::super::value_name(&v.show),

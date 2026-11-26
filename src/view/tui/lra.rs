@@ -314,7 +314,7 @@ impl App<'_> {
     /// them: a gene's pairs in one key.
     fn mark_shown(&mut self) {
         let Some(v) = self.lra.as_mut() else { return };
-        let names: Vec<String> = v.visible().iter().map(|&i| v.rows()[i].name()).collect();
+        let names = v.shown_names();
         let on = names.iter().any(|name| !v.marked.contains(name));
         for name in &names {
             if on {
@@ -671,14 +671,9 @@ impl App<'_> {
 
     /// The pairs `L` runs: those marked, else the one under the cursor.
     pub(super) fn pairs_to_run(&self) -> Vec<String> {
-        let Some(v) = self.lra.as_ref() else {
-            return Vec::new();
-        };
-        if v.marked.is_empty() {
-            v.selected_row().map(|r| r.name()).into_iter().collect()
-        } else {
-            v.marked.iter().cloned().collect()
-        }
+        self.lra
+            .as_ref()
+            .map_or_else(Vec::new, LraView::pairs_to_run)
     }
 
     /// Ctrl+R: `pinto lra --only` on the marked pairs or the one selected, or a

@@ -264,6 +264,7 @@ fn run_lra_refuses_what_a_run_or_data_files_would_ignore() {
         json!({"run": run, "coord_files": ["c.csv"]}),
         json!({"run": run, "batch_files": ["b.txt"]}),
         json!({"run": run, "knn_spatial": 7}),
+        json!({"run": run, "coord_column_names": ["x", "y"]}),
     ] {
         let e = lra_args(ignored).input().run().unwrap_err().to_string();
         assert!(e.contains("read directly"), "{e}");
@@ -285,6 +286,7 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
     let a = lra_args(json!({
         "data_files": ["d1.h5", "d2.h5"],
         "coord_files": ["c1.csv", "c2.csv"],
+        "coord_column_names": ["x", "y"],
         "batch_files": ["b1.txt", "b2.txt"],
         "knn_spatial": 7,
         "seed": 3,
@@ -296,6 +298,7 @@ fn run_lra_reads_data_files_and_passes_the_rest_of_the_flags() {
     assert!(!argv.iter().any(|w| w.starts_with("--from")), "{argv:?}");
     for flag in [
         "--coord",
+        "--coord-column-names",
         "--batch-files",
         "--knn-spatial",
         "--seed",
@@ -864,4 +867,13 @@ fn run_lra_simulate_passes_shard_and_writes_its_shard_file() {
         a.outputs("/p/out"),
         [PathBuf::from("/p/out.lra-simulate.shard-2-of-8.cbor")]
     );
+}
+
+/// `min_receivers` reaches `pinto lra` with `link_community`, which it needs.
+#[test]
+fn run_lra_passes_min_receivers_with_a_link_community() {
+    let a = lra_args(json!({"run": "r", "link_community": 2, "min_receivers": 50}));
+    let argv = lra_argv(&a, LraMethod::ContactEffect, Some("r.pinto.json"), "o");
+    assert!(argv.iter().any(|w| w == "--min-receivers=50"), "{argv:?}");
+    checked(&cli(), &argv).unwrap();
 }

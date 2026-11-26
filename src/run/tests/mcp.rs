@@ -461,6 +461,13 @@ const MIRRORS: &[Mirror] = &[
     ("run_lra", "lra", &[("run", "from")], &[]),
     ("run_lra_simulate", "lra simulate", &[("run", "from")], &[]),
     ("run_lra_merge", "lra merge", &[], &[]),
+    // In the call, in the server's own threads, as the scorers below.
+    (
+        "run_lra_link_communities",
+        "lra link-communities",
+        &[("run", "from")],
+        &["max_threads", "atomic_outputs"],
+    ),
     ("run_compare", "compare", &[], &[]),
     ("run_simulate", "sim new", &[], &[]),
     // These two run in the call, in the server's own threads.
@@ -488,8 +495,17 @@ const MIRRORS: &[Mirror] = &[
 /// (how every call runs): what one tool writes instead of running.
 const FIELDS_WITHOUT_FLAG: &[(&str, &str)] = &[("run_lra", "cluster_shards")];
 
+/// Hidden flags a tool takes all the same: kept off `--help` to keep it
+/// short, but an agent drives every part of lra.
+const HIDDEN_FIELDS: &[(&str, &str)] = &[
+    ("run_lra", "coord_column_names"),
+    ("run_lra", "min_receivers"),
+    ("run_lra_simulate", "coord_column_names"),
+];
+
 /// MCP mirrors the command line: a tool passing a command's flags has a
-/// field for each flag its `--help` shows, and none for a hidden one.
+/// field for each flag its `--help` shows, and none for a hidden one but
+/// those [`HIDDEN_FIELDS`] names.
 #[test]
 fn each_tool_s_fields_are_its_command_s_visible_flags() {
     let cli = crate::built_cli();
@@ -513,7 +529,7 @@ fn each_tool_s_fields_are_its_command_s_visible_flags() {
         let sub = crate::cli_path::find(&cli, command).unwrap().1;
         let mut visible: Vec<String> = sub
             .get_arguments()
-            .filter(|a| !a.is_hide_set())
+            .filter(|a| !a.is_hide_set() || HIDDEN_FIELDS.contains(&(tool, a.get_id().as_str())))
             .map(|a| a.get_id().to_string())
             .filter(|id| !matches!(id.as_str(), "help" | "version" | "verbose"))
             .filter(|id| !not_fields.contains(&id.as_str()))

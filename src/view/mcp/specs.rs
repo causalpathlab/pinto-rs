@@ -101,7 +101,11 @@ pub(super) fn specs() -> Vec<ToolSpec> {
              receptor-competent or not, as lra computed them (show: exposure draws the \
              exposure itself). Arguments stay set until changed. lra judges nothing. A subset's \
              co-expression lfdr is fitted within the subset only (q_scope). view_export curve: true writes the pair's \
-             threshold-response curve.",
+             threshold-response curve. mark, unmark, mark_shown and clear_marks keep a set of \
+             marked pairs (listed as marked); start runs pinto lra --only on them (or on the \
+             pair selected when none is marked) with the shown table's options, as a background \
+             job (job_status follows it; view_lra table then opens the subset), as space, M \
+             and ctrl+r do in the terminal.",
             json!({
                 "type": "object",
                 "properties": {
@@ -111,6 +115,11 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     "limit": {"type": "integer", "minimum": 0, "description": "Pairs listed, this call only [default: 20]"},
                     "pair": {"type": "string", "description": "LIGAND:RECEPTOR to select and draw on the map; \"\" draws groups again"},
                     "show": {"enum": ["classes", "exposure"], "description": "What the pair's map shows [default: classes]"},
+                    "mark": {"type": "array", "items": {"type": "string"}, "description": "LIGAND:RECEPTOR pairs to mark, in the table shown"},
+                    "unmark": {"type": "array", "items": {"type": "string"}, "description": "LIGAND:RECEPTOR pairs to unmark"},
+                    "mark_shown": {"type": "boolean", "description": "Mark every pair the list shows (after search)"},
+                    "clear_marks": {"type": "boolean", "description": "Unmark every pair first"},
+                    "start": {"type": "boolean", "description": "Start pinto lra --only on the marked pairs (else the selected one) as a background job"},
                 },
                 "additionalProperties": false,
             }),

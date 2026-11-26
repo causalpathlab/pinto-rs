@@ -50,6 +50,9 @@ impl Handler for Tools {
             "run_lra" => super::lra::lra(&self.cli, parse(args)?, cx),
             "run_lra_simulate" => super::lra::lra_simulate(&self.cli, parse(args)?, cx),
             "run_lra_merge" => super::lra::lra_merge(&self.cli, parse(args)?, cx),
+            "run_lra_link_communities" => {
+                super::lra_link_communities::link_communities(parse(args)?)
+            }
             "run_simulate" => super::sim::simulate(&self.cli, parse(args)?, cx),
             "run_sim_score_by_set" => super::sim::sim_score(parse(args)?),
             "run_sim_score_by_pair" => super::sim::sim_pairs(parse(args)?),
@@ -988,6 +991,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                     "only": long_flag_arg(lra_cmd, "only", json!({"type": "array", "items": {"type": "string"}})),
                     "shard": long_flag_arg(lra_cmd, "shard", json!({"type": "string", "pattern": "^[0-9]+/[0-9]+$"})),
                     "link_community": long_flag_arg(lra_cmd, "link_community", json!({"type": "integer"})),
+                    "min_receivers": lra("min_receivers", json!({"type": "integer", "minimum": 1})),
                     "n_permutations": lra("n_permutations", json!({"type": "integer", "minimum": 1})),
                     "min_gene_count": lra("min_gene_count", json!({"type": "number"})),
                     "marginal_baselines": lra("marginal_baselines", json!({"type": "boolean"})),
@@ -1066,6 +1070,7 @@ fn specs(cli: &clap::Command) -> Vec<ToolSpec> {
                 "additionalProperties": false,
             }),
         ),
+        super::lra_link_communities::spec(cli),
     ]
 }
 
@@ -1078,6 +1083,7 @@ fn with_lra_input(cli: &clap::Command, command: &str, mut schema: Value) -> Valu
     let shared = json!({
         "data_files": flag("data_files", files()),
         "coord_files": flag("coord_files", files()),
+        "coord_column_names": flag("coord_column_names", json!({"type": "array", "items": {"type": "string"}})),
         "batch_files": flag("batch_files", files()),
         "knn_spatial": flag("knn_spatial", json!({"type": "integer", "minimum": 1})),
         "seed": flag("seed", json!({"type": "integer", "minimum": 0})),

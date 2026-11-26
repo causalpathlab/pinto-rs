@@ -258,20 +258,8 @@ pub fn community_pairs_of_run(
 pub fn list_link_communities(
     args: &crate::lr_activity::args::LraLinkCommunitiesArgs,
 ) -> anyhow::Result<()> {
-    let run = crate::util::metadata::Run::open(&args.from)?;
-    let path = run.required_recorded_output(
-        run.meta.outputs.link_community.as_deref(),
-        "link_community.parquet",
-    )?;
-    // its spatial pairs and their communities; a negative id is no community
-    let (all_pairs, all_communities, _) = crate::util::parquet_io::read_link_community(&path)?;
-    let (pairs, communities): (Vec<_>, Vec<i64>) = all_pairs
-        .into_iter()
-        .zip(all_communities)
-        .filter(|&(_, community)| community >= 0)
-        .unzip();
     println!("link_community\tlinks\treceivers\tfitted");
-    for size in link_community_sizes(&pairs, &communities) {
+    for size in recorded_link_community_sizes(&args.from)? {
         println!(
             "{}\t{}\t{}\t{}",
             size.link_community,
@@ -285,6 +273,25 @@ pub fn list_link_communities(
         );
     }
     Ok(())
+}
+
+/// The link communities of the run `from` (its `.pinto.json` or prefix)
+/// with their links and receivers, from the link-community table its
+/// manifest records: what `pinto lra link-communities` lists.
+pub fn recorded_link_community_sizes(from: &str) -> anyhow::Result<Vec<LinkCommunitySize>> {
+    let run = crate::util::metadata::Run::open(from)?;
+    let path = run.required_recorded_output(
+        run.meta.outputs.link_community.as_deref(),
+        "link_community.parquet",
+    )?;
+    // its spatial pairs and their communities; a negative id is no community
+    let (all_pairs, all_communities, _) = crate::util::parquet_io::read_link_community(&path)?;
+    let (pairs, communities): (Vec<_>, Vec<i64>) = all_pairs
+        .into_iter()
+        .zip(all_communities)
+        .filter(|&(_, community)| community >= 0)
+        .unzip();
+    Ok(link_community_sizes(&pairs, &communities))
 }
 
 /// The table `pinto lra merge` on `inputs` writes under `out`: the collected

@@ -48,6 +48,8 @@ macro_rules! lra_tool_args {
             #[serde(default, skip_serializing_if = "Vec::is_empty")]
             pub coord_files: Vec<String>,
             #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub coord_column_names: Vec<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
             pub batch_files: Vec<String>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub knn_spatial: Option<usize>,
@@ -77,6 +79,7 @@ macro_rules! lra_tool_args {
                     run: self.run.as_deref(),
                     data_files: &self.data_files,
                     coord_files: &self.coord_files,
+                    coord_column_names: &self.coord_column_names,
                     batch_files: &self.batch_files,
                     knn_spatial: self.knn_spatial,
                     cell_types: self.cell_types.as_deref(),
@@ -116,6 +119,10 @@ lra_tool_args!(LraToolArgs {
     /// community of the run (`pinto lra link-communities` lists them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_community: Option<i64>,
+    /// `--min-receivers`: the fewest receivers a link community needs to
+    /// be fitted (with `link_community`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_receivers: Option<usize>,
 } {
     /// `--marginal-baselines`, and `--marginal-permutations`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -347,6 +354,7 @@ struct Input<'a> {
     run: Option<&'a str>,
     data_files: &'a [String],
     coord_files: &'a [String],
+    coord_column_names: &'a [String],
     batch_files: &'a [String],
     knn_spatial: Option<usize>,
     cell_types: Option<&'a str>,
@@ -370,10 +378,12 @@ impl Input<'_> {
                 );
                 anyhow::ensure!(
                     self.coord_files.is_empty()
+                        && self.coord_column_names.is_empty()
                         && self.batch_files.is_empty()
                         && self.knn_spatial.is_none(),
-                    "coord_files, batch_files and knn_spatial apply to data files read \
-                     directly; a run's coordinates, sections and contacts are used"
+                    "coord_files, coord_column_names, batch_files and knn_spatial apply to \
+                     data files read directly; a run's coordinates, sections and contacts \
+                     are used"
                 );
                 Ok(Some(run))
             }
@@ -406,6 +416,12 @@ impl Input<'_> {
         }
         if !self.coord_files.is_empty() {
             argv.push(flag_value("--coord", shown(self.coord_files)));
+        }
+        if !self.coord_column_names.is_empty() {
+            argv.push(flag_value(
+                "--coord-column-names",
+                self.coord_column_names.join(","),
+            ));
         }
         if !self.batch_files.is_empty() {
             argv.push(flag_value("--batch-files", shown(self.batch_files)));
@@ -440,6 +456,9 @@ impl Input<'_> {
         }
         if !self.coord_files.is_empty() {
             args["coord_files"] = self.coord_files.into();
+        }
+        if !self.coord_column_names.is_empty() {
+            args["coord_column_names"] = self.coord_column_names.into();
         }
         if !self.batch_files.is_empty() {
             args["batch_files"] = self.batch_files.into();
@@ -524,6 +543,9 @@ pub(super) fn lra_argv(
     }
     if let Some(k) = a.link_community {
         argv.push(flag_value("--link-community", k));
+    }
+    if let Some(n) = a.min_receivers {
+        argv.push(flag_value("--min-receivers", n));
     }
     argv.extend(a.input().flags());
     if let Some(n) = a.n_permutations {

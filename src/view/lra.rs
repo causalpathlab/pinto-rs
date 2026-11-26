@@ -644,6 +644,24 @@ impl LraView {
         self.read.get(self.at)?.as_ref()?.rows.get(self.selected?)
     }
 
+    /// The names of the pairs the list shows, in order.
+    pub fn shown_names(&self) -> Vec<String> {
+        self.visible()
+            .iter()
+            .map(|&i| self.rows()[i].name())
+            .collect()
+    }
+
+    /// The pairs a `--only` run takes: the marked ones, else the one
+    /// selected; none when neither.
+    pub fn pairs_to_run(&self) -> Vec<String> {
+        if self.marked.is_empty() {
+            self.selected_row().map(PairRow::name).into_iter().collect()
+        } else {
+            self.marked.iter().cloned().collect()
+        }
+    }
+
     /// The row of `name` in `table`, as [`LraView::select`] finds it:
     /// `None` for `""`, an unknown name an error naming the nearest.
     pub fn resolve(table: &Table, name: &str) -> anyhow::Result<Option<usize>> {
