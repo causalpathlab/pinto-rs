@@ -755,7 +755,7 @@ fn the_session_status_says_where_the_fits_are() {
 #[test]
 fn v_opens_the_run_as_this_session_was_asked_to() {
     let session = crate::tui::plain_session();
-    let mut cmd = view_command("pinto".into(), Path::new("r.pinto.json"));
+    let mut cmd = view_command("pinto".into(), Path::new("r.pinto.json"), false);
     session.command(&mut cmd, legume_tui::Group::Shared);
     let args: Vec<_> = cmd
         .get_args()

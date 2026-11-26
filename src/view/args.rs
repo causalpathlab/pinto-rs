@@ -296,6 +296,11 @@ pub struct ViewArgs {
     )]
     pub pair: Option<Box<str>>,
 
+    /// Open in the pairs layer, as `I` does: how `pinto lra`'s screens open
+    /// the run they analysed.
+    #[arg(long, hide = true)]
+    pub pair_list: bool,
+
     #[arg(
         long,
         value_enum,

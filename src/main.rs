@@ -1477,6 +1477,9 @@ fn run_command() -> anyhow::Result<()> {
             Some(LraSub::LinkCommunities(args)) => {
                 lr_activity::ligand_effect::link_community_scope::list_link_communities(args)?
             }
+            // Nothing to read, at a terminal: the screens set up the analysis.
+            #[cfg(feature = "view")]
+            None if lra_screens_asked(&lra.args) => run::tui::run_lra(built_cli())?,
             None => fit_srt_lr_activity(&lra.args)?,
         },
         Commands::Sim(op) => match op {
@@ -1526,3 +1529,14 @@ mod session_cli_tests;
 #[cfg(test)]
 #[path = "tests/surface.rs"]
 mod surface_tests;
+
+/// Whether `pinto lra` was given nothing to read, at a terminal: it then
+/// opens the screens that set the analysis up (`pinto run`'s, for lra).
+#[cfg(feature = "view")]
+fn lra_screens_asked(args: &lr_activity::SrtLrActivityArgs) -> bool {
+    use std::io::IsTerminal;
+    args.input.from.is_none()
+        && args.input.data_files.is_empty()
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+}

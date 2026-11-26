@@ -110,7 +110,7 @@ impl App {
     }
 
     fn tabs(&self) -> Vec<Line<'static>> {
-        let mut spans = vec![Span::styled(" pinto run   ", bold())];
+        let mut spans = vec![Span::styled(self.tab_title(), bold())];
         for (i, s) in self.screens().into_iter().enumerate() {
             let label = format!(" {} {} ", i + 1, s.title());
             spans.push(if s == self.screen {
@@ -126,9 +126,9 @@ impl App {
             .filter(|r| r.on)
             .map(|r| r.form.name.clone())
             .collect();
+        let input = self.input_summary();
         let summary = format!(
-            "  {} data · {}",
-            self.pairs.len(),
+            "  {input} · {}",
             if queued.is_empty() {
                 "no method".to_string()
             } else {
@@ -139,8 +139,6 @@ impl App {
         vec![Line::from(spans), Line::from("")]
     }
 
-    /// The message and the keys, the keys wrapped at whole hints to
-    /// `width` columns so none is cut off.
     /// The keys of the screen shown, and those every screen shares.
     fn key_hints(&self) -> (&'static [&'static str], Vec<String>) {
         let keys: &[&str] = match self.screen {
@@ -154,6 +152,13 @@ impl App {
                 "X clear all",
                 "d remove",
                 "J K reorder",
+            ],
+            Screen::Methods if self.lra_mode => &[
+                "f choose the run",
+                "space queue",
+                "enter / → queue and show flags",
+                "o name one --out by hand",
+                "✓ done in the last run",
             ],
             Screen::Methods => &[
                 "space queue",
@@ -210,6 +215,8 @@ impl App {
         lines
     }
 
+    /// The message and the keys, the keys wrapped at whole hints to
+    /// `width` columns so none is cut off.
     pub(super) fn status(&self, width: usize) -> Vec<Line<'static>> {
         let (keys, all) = self.key_hints();
         // Over the review, the review shows it.

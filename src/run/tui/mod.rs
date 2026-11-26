@@ -1,11 +1,14 @@
 //! Terminal front end of `pinto run`: data files with their coordinates
 //! and batch labels, methods, their flags, a confirm popup with the exact
-//! commands, then the queue running with its log.
+//! commands, then the queue running with its log. A bare `pinto lra` opens
+//! the same screens for one fitted run ([`lra_mode`]): the run picked in a
+//! file browser instead of data files, lra and its power check the methods.
 
 mod batch;
 mod data;
 mod draw;
 mod jobs;
+mod lra_mode;
 mod pick;
 mod plan;
 
@@ -174,7 +177,7 @@ pub(crate) struct App {
     shift_enter: bool,
     /// Whether a terminal is there: nothing is written to it otherwise.
     attached: bool,
-    /// The fit under the cursor on the run screen.
+    /// The job (a fit, or lra) under the cursor on the run screen.
     job_row: usize,
     message: Option<String>,
     /// `?`: every key of the screen in a popup, until the next key.
@@ -182,6 +185,10 @@ pub(crate) struct App {
     quit: bool,
     /// The manifest to open in `pinto view` once the terminal is given back.
     view: Option<PathBuf>,
+    /// `pinto lra`: the analysis of one fitted run, not fits.
+    lra_mode: bool,
+    /// The run `pinto lra` analyses, once chosen.
+    run: Option<PathBuf>,
 }
 
 /// A file for a worker to read.
@@ -261,9 +268,13 @@ fn fits_status(states: &[jobs::State], finished: bool) -> String {
 /// `pinto view` on `manifest`, as `v` opens it once the screens are left;
 /// [`legume_tui::Session::run_child`] runs it in this session as this one
 /// runs (plain too, when it was asked to be).
-fn view_command(exe: PathBuf, manifest: &Path) -> std::process::Command {
+fn view_command(exe: PathBuf, manifest: &Path, pairs: bool) -> std::process::Command {
     let mut view = std::process::Command::new(exe);
     view.arg("view").arg(shown(manifest));
+    // From `pinto lra`: its tables, in the pairs layer.
+    if pairs {
+        view.arg("--pair-list");
+    }
     view
 }
 
@@ -273,10 +284,24 @@ pub fn run(cli: clap::Command, args: &crate::run::RunArgs) -> anyhow::Result<()>
     // First: hosted, this process only relays the terminal from here on,
     // and the program the host starts does the rest.
     let session = crate::tui::TOOL.session("run", &args.session())?;
-    let mut app = App::new(cli, args.start())?;
+    let app = App::new(cli, args.start())?;
+    run_screens(app, &session)
+}
+
+/// `pinto lra` with no arguments: the screens set up for the analysis of
+/// one fitted run, chosen in a file browser starting here.
+pub fn run_lra(cli: clap::Command) -> anyhow::Result<()> {
+    let session = crate::tui::TOOL.session("lra", &legume_tui::Options::default())?;
+    let app = App::new_lra(cli, PathBuf::from("."))?;
+    run_screens(app, &session)
+}
+
+/// Draw `app` in `session` until it quits, then say how its jobs ended and
+/// open `pinto view` when asked.
+fn run_screens(mut app: App, session: &legume_tui::Session) -> anyhow::Result<()> {
     let modes = crate::tui::modes(legume_tui::Mouse::Off);
     let ended = session.with_terminal(modes, |terminal| {
-        let result = app.screens_loop(&session, terminal);
+        let result = app.screens_loop(session, terminal);
         // Wait for the worker, so no fit it was starting outlives us.
         let ended = app.queue.take().map(Queue::finish);
         result.map(|()| ended)
@@ -297,7 +322,7 @@ pub fn run(cli: clap::Command, args: &crate::run::RunArgs) -> anyhow::Result<()>
     }
     // Not after a `pinto session kill`: it asked for the session to end.
     if let (Some(manifest), false) = (&app.view, session.stop_requested()) {
-        let mut view = view_command(std::env::current_exe()?, manifest);
+        let mut view = view_command(std::env::current_exe()?, manifest, app.lra_mode);
         // In the same session: a `pinto session kill` reaches it through us.
         session.run_child(&mut view)?;
     }
@@ -344,6 +369,7 @@ impl App {
     /// One line for `pinto session list` and the resume picker.
     fn session_status(&self) -> String {
         match &self.queue {
+            None if self.lra_mode => "setting up lra".into(),
             None => "setting up fits".into(),
             Some(q) => match q.shared.lock() {
                 Ok(s) => fits_status(&s.states, s.finished),
@@ -403,6 +429,8 @@ impl App {
             help: false,
             quit: false,
             view: None,
+            lra_mode: false,
+            run: None,
         })
     }
 
@@ -415,6 +443,7 @@ impl App {
         Screen::ALL
             .into_iter()
             .filter(|s| *s != Screen::Run || self.queue.is_some())
+            .filter(|s| *s != Screen::Data || !self.lra_mode)
             .collect()
     }
 
