@@ -7,12 +7,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// What `pinto run` browses for: count backends to fit, their coordinate
-/// files, or their batch label files; several at once either way.
+/// files, or their batch label files, several at once; or, for `pinto lra`,
+/// the one fitted run (its `.pinto.json`) the analysis reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
     Data,
     Coord,
     Batch,
+    Run,
 }
 
 /// What a data file has beside it, one per data file.
@@ -27,7 +29,7 @@ impl Pick {
     #[must_use]
     pub fn side(self) -> Option<Side> {
         match self {
-            Pick::Data => None,
+            Pick::Data | Pick::Run => None,
             Pick::Coord => Some(Side::Coord),
             Pick::Batch => Some(Side::Batch),
         }
@@ -49,6 +51,7 @@ impl Wanted for Pick {
                 "Batch labels, one file per data file",
                 "label files (.txt, .tsv, .csv, gzipped too)",
             ),
+            Pick::Run => ("Fitted run to analyse", "runs (.pinto.json)"),
         };
         Header::new(title, what)
     }
@@ -58,12 +61,13 @@ impl Wanted for Pick {
             Pick::Data => is_data(name),
             Pick::Coord => is_coord(name),
             Pick::Batch => is_batch(name),
+            Pick::Run => name.ends_with(crate::util::metadata::MANIFEST_SUFFIX),
         };
         wanted.then(|| legume_tui::browse::size(path).unwrap_or_default())
     }
 
     fn store(&self, _path: &Path, _name: &str) -> Option<String> {
-        (*self != Pick::Batch).then(String::new)
+        matches!(self, Pick::Data | Pick::Coord).then(String::new)
     }
 
     fn describe<'a>(&self, size: &'a String) -> Cow<'a, str> {
@@ -71,7 +75,7 @@ impl Wanted for Pick {
     }
 
     fn many(&self) -> bool {
-        true
+        *self != Pick::Run
     }
 }
 

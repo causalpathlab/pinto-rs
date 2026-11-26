@@ -398,3 +398,16 @@ fn the_run_browser_comes_back_on_attach_and_stops_on_kill() {
     assert!(dir.sockets().is_empty());
     dir.gone(pid);
 }
+
+/// `pinto lra` with nothing to read, at a terminal, opens its screens as a
+/// session: the browser for the fitted run first, over pinto lra's tabs.
+#[test]
+fn bare_lra_opens_its_screens_on_the_run_picker() {
+    let dir = private();
+    let mut t = term(&dir, &["lra"], &[]);
+    t.wait_screen("Fitted run to analyse");
+    t.wait_screen("pinto lra");
+    dir.wait_listed("setting up lra");
+    t.type_(b"\x03");
+    assert_eq!(t.exit_code(), 0);
+}

@@ -98,6 +98,10 @@ pub fn run(
     app.shift_enter = session.keyboard_enhanced();
     app.open_rounds(args.round.as_deref().map(PathBuf::from));
     app.follower = follow.map(follow::Follower::open).transpose()?;
+    // From `pinto lra`: its tables, in the pairs layer (as `I` opens it).
+    if args.pair_list {
+        app.toggle_lra(None)?;
+    }
     app.run(terminal)
 }
 

@@ -21,7 +21,8 @@ impl App {
                 let out = self.rows[self.method_row].out.clone();
                 self.edit(Target::Out(self.method_row), out);
             }
-            KeyCode::Char('O') => self.edit(Target::Header, self.header.clone()),
+            KeyCode::Char('O') if !self.lra_mode => self.edit(Target::Header, self.header.clone()),
+            KeyCode::Char('f') if self.lra_mode => self.choose_run(),
             KeyCode::Enter | KeyCode::Right => {
                 if !self.rows[self.method_row].on {
                     self.queue_row(self.method_row, true);
@@ -293,6 +294,10 @@ impl App {
     }
 
     pub(super) fn open_confirm(&mut self) {
+        if self.lra_mode && self.run.is_none() {
+            self.message = Some("no run chosen yet: f chooses the fitted run to analyse".into());
+            return;
+        }
         if !self.rows.iter().any(|r| r.on) {
             self.message = Some(if self.rows.iter().any(super::Row::done) {
                 "every method queued finished: space on the Methods screen queues one again".into()

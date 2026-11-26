@@ -291,7 +291,17 @@ pinto lra --from out/run1.pinto.json          # writes out/run1.lra.parquet
 pinto lra data.zarr --coord cells.csv -o out/lra
 pinto lra --from out/run1.pinto.json --lr-pairs my_pairs.tsv
 pinto lra --from out/run1.pinto.json --only L1,L2:R1_R2
+pinto lra                                      # at a terminal: the screens below
 ```
+
+With nothing to read, at a terminal, `pinto lra` opens `pinto run`'s
+screens for the analysis instead: a file browser picks the fitted run
+(its `.pinto.json`; `f` picks another), `lra` is queued and `lra simulate`
+(its power check) can be, each with its flags on the Parameters screen
+(`--shard`, which splits a run for a cluster, is left out), ctrl+r shows
+the commands and runs them, writing beside the run, and `v` opens the run
+in `pinto view` with its pairs listed (as `I` does there). It is a session
+as `pinto run` is (ctrl+] detaches it).
 
 Pairs and response programs come from a reference (LIANA+ consensus
 pairs; receptor -> signalling -> TF -> target programs from OmniPath and

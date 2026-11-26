@@ -119,6 +119,12 @@ impl App {
         let Some(b) = self.browser.take() else { return };
         self.browse_dir = b.dir;
         let Some(paths) = chosen else { return };
+        if b.want == Pick::Run {
+            if let Some(run) = paths.first() {
+                self.take_run(run);
+            }
+            return;
+        }
         match b.want.side() {
             None => self.take_data(paths),
             Some(side) => self.take_sides(&paths, side),
