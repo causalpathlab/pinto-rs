@@ -18,6 +18,7 @@ use crate::lr_activity::ligand_effect::output::{percent_short, strip_zeros, CONT
 use crate::run::tui::{JobQueue, JobState, QueuedJob};
 use crate::tui::style;
 use legume_tui::save::Field;
+use legume_tui::RUN_KEY;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style as TStyle;
 use ratatui::text::{Line, Span};
@@ -27,7 +28,7 @@ use std::path::{Path, PathBuf};
 pub const LRA_HELP: &[&str] = &[
     " ↑ ↓ pair  o sort  / genes",
     " space/m mark  M mark all shown",
-    " L run lra --only: marked or this pair",
+    " ctrl+r run lra --only: marked or this pair",
     " T next table  e exposure  c curve  X stop",
     " s save  z/Z zoom  ? all keys",
     " I or Esc leave the pairs",
@@ -95,7 +96,7 @@ impl App<'_> {
                 "{}: ↑ ↓ choose a pair",
                 style::middle(&v.tables[v.at].label(), LABEL_WIDTH)
             ),
-            None => "no lra table for this run: L runs pinto lra on it".into(),
+            None => format!("no lra table for this run: {RUN_KEY} runs pinto lra on it"),
         };
         self.pair_pending = self.lra.as_ref().is_some_and(|v| v.selected.is_some());
         self.need_map = true;
@@ -125,7 +126,7 @@ impl App<'_> {
 
     /// A key while the layer is open; false for the viewer's own, and
     /// for Ctrl or Alt with a key (Ctrl+C quits, as everywhere), but in
-    /// the search field, which edits with them.
+    /// the search field, which edits with them, and Ctrl+R, which runs lra.
     pub(super) fn lra_key(
         &mut self,
         key: KeyEvent,
@@ -136,6 +137,11 @@ impl App<'_> {
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         if chord && key.code == KeyCode::Char('c') {
             return Ok(false);
+        }
+        // The suite's run key, as in `pinto run`: Ctrl+R runs lra.
+        if legume_tui::is_run_key(&key) && self.lra_search.is_none() {
+            self.start_lra();
+            return Ok(true);
         }
         if let Some(mut field) = self.lra_search.take() {
             match key.code {
@@ -162,7 +168,6 @@ impl App<'_> {
         }
         match key.code {
             KeyCode::Char('I') | KeyCode::Esc => self.leave_lra(),
-            KeyCode::Char('L') => self.start_lra(),
             KeyCode::Char('X') if self.lra_job.is_some() => self.stop_lra(),
             _ if self.lra.is_none() => return Ok(false),
             KeyCode::Char(' ' | 'm') => self.mark_pair(),
@@ -299,7 +304,7 @@ impl App<'_> {
             self.pick_pair((at + 1).min(shown - 1));
         }
         self.status = format!(
-            "{name} {}; {n} marked: L runs pinto lra --only on them",
+            "{name} {}; {n} marked: {RUN_KEY} runs pinto lra --only on them",
             if on { "marked" } else { "unmarked" }
         );
         self.need_panel = true;
@@ -320,7 +325,7 @@ impl App<'_> {
         }
         let n = v.marked.len();
         self.status = format!(
-            "{} {} pairs; {n} marked: L runs pinto lra --only on them",
+            "{} {} pairs; {n} marked: {RUN_KEY} runs pinto lra --only on them",
             if on { "marked" } else { "unmarked" },
             names.len()
         );
@@ -333,7 +338,8 @@ impl App<'_> {
             return Ok(());
         };
         if v.tables.len() < 2 {
-            self.status = "this run has one lra table: L runs a subset of the marked pairs".into();
+            self.status =
+                format!("this run has one lra table: {RUN_KEY} runs a subset of the marked pairs");
             return Ok(());
         }
         let next = (v.at + 1) % v.tables.len();
@@ -436,7 +442,10 @@ impl App<'_> {
             out.push((Line::styled(" ligand-receptor pairs", bold), None));
             out.push((Line::raw(" no lra table for this run"), None));
             out.push((
-                Line::styled(" L runs pinto lra on it (contact effect)", dim),
+                Line::styled(
+                    format!(" {RUN_KEY} runs pinto lra on it (contact effect)"),
+                    dim,
+                ),
                 None,
             ));
             out.extend(job);
@@ -472,7 +481,10 @@ impl App<'_> {
         }
         if !v.marked.is_empty() {
             out.push((
-                Line::styled(format!(" {} marked  L runs them", v.marked.len()), dim),
+                Line::styled(
+                    format!(" {} marked  {RUN_KEY} runs them", v.marked.len()),
+                    dim,
+                ),
                 None,
             ));
         }
@@ -669,7 +681,7 @@ impl App<'_> {
         }
     }
 
-    /// `L`: `pinto lra --only` on the marked pairs or the one selected, or a
+    /// Ctrl+R: `pinto lra --only` on the marked pairs or the one selected, or a
     /// full `pinto lra` on a run without a table, in the background. A subset
     /// whose table is there already is opened instead.
     fn start_lra(&mut self) {
@@ -680,7 +692,8 @@ impl App<'_> {
         let manifest = self.base.run.manifest.clone();
         let only = self.pairs_to_run();
         if self.lra.is_some() && only.is_empty() {
-            self.status = "choose or mark a pair first (space or m), then L runs it".into();
+            self.status =
+                format!("choose or mark a pair first (space or m), then {RUN_KEY} runs it");
             return;
         }
         let options = self

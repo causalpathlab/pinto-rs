@@ -158,7 +158,7 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
 }
 
 /// The layer's keys at the edges: Ctrl and Alt chords are the viewer's
-/// (Ctrl+C quits), space marks successive pairs from none selected, `T`
+/// (Ctrl+C quits) but Ctrl+R, which runs lra; space marks successive pairs from none selected, `T`
 /// draws the pair it keeps, and the curve is saved at a still's size
 /// whatever room the screen gives it.
 #[test]
@@ -194,6 +194,13 @@ fn the_lra_layers_keys_mark_in_turn_and_leave_chords_alone() {
     assert!(!app.lra_key(alt, None).unwrap());
     assert!(!app.lra_curve && app.lra_job.is_none());
 
+    // Ctrl+R runs lra, the suite's run key; with no pair chosen it asks for
+    // one and starts nothing. `L` is the viewer's again: the level.
+    let run = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    assert!(app.lra_key(run, None).unwrap());
+    assert!(app.lra_job.is_none() && app.status.contains("ctrl+r runs it"));
+    assert!(!app.lra_key(key(KeyCode::Char('L')), None).unwrap());
+
     // Space from no pair selected marks the first, then the second.
     let v = app.lra.as_ref().unwrap();
     assert!(v.selected.is_none());
@@ -218,10 +225,10 @@ fn the_lra_layers_keys_mark_in_turn_and_leave_chords_alone() {
     };
     assert!(lines
         .iter()
-        .any(|(l, _)| said(l).contains("marked  L runs them")));
+        .any(|(l, _)| said(l).contains("marked  ctrl+r runs them")));
     app.lra_key(key(KeyCode::Char('M')), None).unwrap();
     assert!(app.lra.as_ref().unwrap().marked.is_empty());
-    // With none marked, L runs the pair under the cursor.
+    // With none marked, ctrl+r runs the pair under the cursor.
     app.lra.as_mut().unwrap().select("L1:R1").unwrap();
     assert_eq!(app.pairs_to_run(), vec!["L1:R1".to_string()]);
     app.lra.as_mut().unwrap().marked.insert("L1:G0".into());
@@ -436,4 +443,23 @@ fn heatmap_column_names_keep_their_start_and_end() {
     cut_in_the_middle(plots::NAME_ROWS, |comm, c| {
         plots::column_name(comm, c).into_iter().collect()
     });
+}
+
+#[test]
+fn a_switches_the_grids_zoom_keys_to_every_batch_and_back() {
+    use super::super::tests::lra::lra_run;
+    let dir = tempfile::tempdir().unwrap();
+    let (prefix, _) = lra_run(dir.path());
+    let args = super::super::tests::view_args(&prefix, &[]);
+    let base = Base::load(&prefix, "auto", Theme::Dark).unwrap();
+    let level = base.level(0, false).unwrap();
+    let session = legume_tui::Session::plain(&crate::tui::TOOL);
+    let gfx = (Gfx::Cells(Glyphs::HalfBlocks, None), (8., 16.));
+    let mut app = App::new(&base, level, &args, gfx, &session);
+    let a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+    assert!(!app.grid.all);
+    assert!(app.grid_key(a));
+    assert!(app.grid.all && app.status.contains("every batch"));
+    assert!(app.grid_key(a));
+    assert!(!app.grid.all);
 }

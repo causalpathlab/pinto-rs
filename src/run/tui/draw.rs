@@ -62,6 +62,9 @@ impl App {
             let rows = usize::from(area.height).saturating_sub(10).max(3);
             popup(f, area, self.label_lines(rows), 80);
         }
+        if self.help {
+            popup(f, area, self.help_lines(), 70);
+        }
         if let Some(e) = &self.editor {
             let mut help = Vec::new();
             let what = match &e.target {
@@ -138,7 +141,8 @@ impl App {
 
     /// The message and the keys, the keys wrapped at whole hints to
     /// `width` columns so none is cut off.
-    pub(super) fn status(&self, width: usize) -> Vec<Line<'static>> {
+    /// The keys of the screen shown, and those every screen shares.
+    fn key_hints(&self) -> (&'static [&'static str], Vec<String>) {
         let keys: &[&str] = match self.screen {
             Screen::Data => &[
                 "a add data",
@@ -169,17 +173,11 @@ impl App {
             ],
             Screen::Run => &[
                 "↑ ↓ choose",
-                "s stop",
+                "X stop",
                 "r run again what did not finish",
                 "v open the one chosen in pinto view",
             ],
         };
-        // Over the review, the review shows it.
-        let message = self.message.as_ref().filter(|_| self.confirm.is_none());
-        let mut lines = vec![Line::from(Span::styled(
-            format!(" {}", message.cloned().unwrap_or_default()),
-            bold(),
-        ))];
         let mut all = vec![
             if self.shift_enter {
                 "tab / shift-tab / shift-enter / 1-4 screens"
@@ -188,10 +186,38 @@ impl App {
             }
             .to_string(),
             format!("{} review and run", legume_tui::RUN_KEY),
+            "esc closes a popup".to_string(),
+            "? all keys".to_string(),
             "q quit".to_string(),
         ];
         // The detach and switch keys, in a session.
         all.extend(crate::tui::session_keys().map(|(key, what)| format!("{key} {what}")));
+        (keys, all)
+    }
+
+    /// `?`: every key of the screen shown, one a line, then the shared ones.
+    pub(super) fn help_lines(&self) -> Vec<Line<'static>> {
+        let (keys, all) = self.key_hints();
+        let mut lines = vec![Line::from(Span::styled(
+            format!(" keys: {}", self.screen.title()),
+            bold(),
+        ))];
+        lines.extend(keys.iter().map(|k| Line::raw(format!(" {k}"))));
+        lines.push(Line::raw(""));
+        lines.extend(all.into_iter().map(|k| Line::raw(format!(" {k}"))));
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(" any key closes this", dim()));
+        lines
+    }
+
+    pub(super) fn status(&self, width: usize) -> Vec<Line<'static>> {
+        let (keys, all) = self.key_hints();
+        // Over the review, the review shows it.
+        let message = self.message.as_ref().filter(|_| self.confirm.is_none());
+        let mut lines = vec![Line::from(Span::styled(
+            format!(" {}", message.cloned().unwrap_or_default()),
+            bold(),
+        ))];
         let keys: Vec<String> = keys.iter().map(ToString::to_string).collect();
         for group in [&keys, &all] {
             let mut row = String::new();
