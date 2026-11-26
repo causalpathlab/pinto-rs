@@ -17,7 +17,7 @@ use super::gene::{GeneMap, Source};
 use super::lupin::same_file;
 use super::render::{Layer, Style};
 use super::StillPair;
-use super::{Base, Level};
+use super::{Base, FigureLook, Level};
 use crate::lr_activity::args::LraMethod;
 use crate::lr_activity::ligand_effect::frame::{Class, PairMap, RunFrame};
 use crate::lr_activity::ligand_effect::only;
@@ -420,6 +420,7 @@ impl OnMap {
         base: &Base,
         show: PairShow,
         point: f32,
+        look: FigureLook,
     ) -> (&Level, Style<'static>, Option<&GeneMap>) {
         let style = Style {
             layer: match show {
@@ -430,6 +431,7 @@ impl OnMap {
             focus: None,
             theme: base.theme(),
             point,
+            look,
         };
         let gene = (show == PairShow::Exposure).then(|| self.exposure(base));
         (&self.classes, style, gene)

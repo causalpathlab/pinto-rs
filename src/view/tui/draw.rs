@@ -38,6 +38,7 @@ impl App<'_> {
                     focus: None,
                     theme: self.base.theme(),
                     point: self.point,
+                    look: self.look,
                 },
             ),
             None => (self.level(), self.style()),
@@ -60,6 +61,7 @@ impl App<'_> {
             focus: self.focus(),
             theme: self.base.theme(),
             point: self.point,
+            look: self.look,
         }
     }
 

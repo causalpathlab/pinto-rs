@@ -209,6 +209,8 @@ struct App<'a> {
     edges: bool,
     /// Which of a round's grouping's links `edges` draws (`--edges-shown`).
     edges_shown: super::EdgesShown,
+    /// Heterotypic colour, edge width and cell opacity (their flags).
+    look: super::FigureLook,
     /// Cell disc size, × the default (`<`/`>`).
     point: f32,
     /// Batch tile last jumped to.
@@ -356,6 +358,7 @@ impl<'a> App<'a> {
             community,
             edges: args.edges,
             edges_shown: args.edges_shown,
+            look: args.look(),
             point: args.point_size,
             tile: None,
             theme: args.theme,

@@ -227,6 +227,7 @@ impl App<'_> {
             self.toggle_edges(terminal)?;
         }
         self.edges_shown = view.edges_shown;
+        self.look = view.look();
         self.point = view.point_size;
         self.follow_gene(view);
         let [x0, y0, x1, y1] = view.bbox;

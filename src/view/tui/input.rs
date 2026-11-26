@@ -49,6 +49,7 @@ impl App<'_> {
             self.source,
             self.edges,
             self.edges_shown,
+            self.look,
             self.point,
             cam,
         )

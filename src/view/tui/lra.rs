@@ -363,7 +363,7 @@ impl App<'_> {
     /// pair drawn.
     pub(super) fn lra_drawn(&self) -> Option<(&Level, Style<'static>, Option<&GeneMap>)> {
         let v = self.lra.as_ref().filter(|_| self.lra_on)?;
-        Some(v.shown()?.drawn(self.base, v.show, self.point))
+        Some(v.shown()?.drawn(self.base, v.show, self.point, self.look))
     }
 
     /// Whether the curve is under the map.

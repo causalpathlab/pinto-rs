@@ -1,6 +1,6 @@
 //! The options of `pinto view`, and the checks on their values.
 
-use super::color::Theme;
+use super::color::{Rgb, Theme};
 use super::lra;
 use super::render::Layer;
 use clap::Args;
@@ -201,6 +201,41 @@ pub struct ViewArgs {
 
     #[arg(
         long,
+        value_name = "#RRGGBB",
+        value_parser = parse_colour,
+        help = "With --edges on a round's groups: heterotypic links in this colour",
+        long_help = "The colour of heterotypic links (between two groups of a\n\
+                     round) with --edges, as #rrggbb, e.g. '#d7191c' for red;\n\
+                     by default the page's text colour."
+    )]
+    pub heterotypic_colour: Option<Rgb>,
+
+    #[arg(
+        long,
+        default_value_t = 1.,
+        value_name = "X",
+        value_parser = parse_edge_width,
+        help = "Edge line width, × the default",
+        long_help = "Edge line width, as a multiple of the default (1 to 3 pixels,\n\
+                     with the zoom), so links stay visible on a wide figure."
+    )]
+    pub edge_width: f32,
+
+    #[arg(
+        long,
+        default_value_t = 1.,
+        value_name = "A",
+        value_parser = parse_point_alpha,
+        help = "Cell opacity, 0 to 1, so edges under them stand out",
+        long_help = "Cell opacity over the page, from 0 (hidden) to 1 (opaque);\n\
+                     below 1, cells fade towards the page and the edges under\n\
+                     them show through. Where large discs (--point-size)\n\
+                     overlap, the overlap is more opaque."
+    )]
+    pub point_alpha: f32,
+
+    #[arg(
+        long,
         default_value_t = 1.,
         value_name = "X",
         value_parser = parse_point_size,
@@ -392,6 +427,15 @@ pub enum Show {
 }
 
 impl ViewArgs {
+    /// The figure's look its flags ask for.
+    pub fn look(&self) -> FigureLook {
+        FigureLook {
+            heterotypic: self.heterotypic_colour,
+            edge_width: self.edge_width,
+            point_alpha: self.point_alpha,
+        }
+    }
+
     /// The run, once [`run_view`](super::run_view) has made sure there is one.
     pub fn prefix(&self) -> &str {
         self.prefix.as_deref().expect("run_view picks a run first")
@@ -432,15 +476,66 @@ fn in_range(x: f32, range: &std::ops::RangeInclusive<f32>, what: &str) -> Result
 /// Smallest and largest `--point-size`.
 pub(super) const POINT_SIZES: std::ops::RangeInclusive<f32> = 0.25..=8.;
 
-fn parse_point_size(s: &str) -> Result<f32, String> {
+/// Edge widths, × the default, as `--edge-width` takes them.
+const EDGE_WIDTHS: std::ops::RangeInclusive<f32> = 0.25..=8.;
+
+/// Cell opacities, as `--point-alpha` takes them.
+const POINT_ALPHAS: std::ops::RangeInclusive<f32> = 0.0..=1.;
+
+pub(super) fn check_edge_width(x: f32) -> Result<f32, String> {
+    in_range(x, &EDGE_WIDTHS, "a width")
+}
+
+pub(super) fn check_point_alpha(x: f32) -> Result<f32, String> {
+    in_range(x, &POINT_ALPHAS, "an opacity")
+}
+
+fn parse_edge_width(s: &str) -> Result<f32, String> {
+    parse_in(s, &EDGE_WIDTHS, "a width")
+}
+
+fn parse_point_alpha(s: &str) -> Result<f32, String> {
+    parse_in(s, &POINT_ALPHAS, "an opacity")
+}
+
+/// `s` as a number `range` holds; else what it should be.
+fn parse_in(s: &str, range: &std::ops::RangeInclusive<f32>, what: &str) -> Result<f32, String> {
     s.parse::<f32>()
         .ok()
-        .and_then(|x| check_point_size(x).ok())
-        .ok_or_else(|| {
-            format!(
-                "{s:?}: a size from {} to {}",
-                POINT_SIZES.start(),
-                POINT_SIZES.end()
-            )
-        })
+        .and_then(|x| in_range(x, range, what).ok())
+        .ok_or_else(|| format!("{s:?}: {what} from {} to {}", range.start(), range.end()))
+}
+
+pub(super) fn parse_colour(s: &str) -> Result<Rgb, String> {
+    super::color::parse_hex(s).ok_or_else(|| format!("{s:?}: a colour as #rrggbb"))
+}
+
+/// A figure's look beyond what it shows: the heterotypic links' colour,
+/// the edges' width and the cells' opacity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FigureLook {
+    pub heterotypic: Option<Rgb>,
+    pub edge_width: f32,
+    pub point_alpha: f32,
+}
+
+impl Default for FigureLook {
+    fn default() -> Self {
+        FigureLook {
+            heterotypic: None,
+            edge_width: 1.,
+            point_alpha: 1.,
+        }
+    }
+}
+
+impl FigureLook {
+    /// The colour heterotypic links are drawn in on `theme`'s page.
+    pub fn heterotypic_on(self, theme: Theme) -> Rgb {
+        self.heterotypic.unwrap_or_else(|| theme.text())
+    }
+}
+
+fn parse_point_size(s: &str) -> Result<f32, String> {
+    parse_in(s, &POINT_SIZES, "a size")
 }
