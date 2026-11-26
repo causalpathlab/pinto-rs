@@ -3,7 +3,7 @@
 use super::super::color::{Ramp, Rgb};
 use super::super::gene::GeneMap;
 use super::super::render::{self, Frame, Layer, Style};
-use super::super::{legend_swatch, markers, scalebar, thousands, value_name, Level, Show};
+use super::super::{legend_swatch, markers, scalebar, thousands, EdgesShown, Level, Show};
 use super::{lra, plots, relabel, App, Gfx, Pick};
 use crate::tui::style;
 use legume_tui::chrome::rgb;
@@ -290,14 +290,17 @@ impl App<'_> {
             ));
         }
         if let Some(links) = level.edges.as_ref().filter(|_| self.edges) {
+            // On a round's groups: the kinds drawn, of all its typed links.
             let n = if links.ends.is_some() {
                 let (iso, hetero) = links.kinds;
-                let shown = value_name(&self.edges_shown);
-                format!(
-                    "{} iso, {} hetero, {shown} shown",
-                    thousands(iso),
-                    thousands(hetero)
-                )
+                let (iso_s, hetero_s) = (thousands(iso), thousands(hetero));
+                match self.edges_shown {
+                    EdgesShown::All => format!("{iso_s} iso, {hetero_s} hetero"),
+                    EdgesShown::Heterotypic => {
+                        format!("{hetero_s} hetero of {}", thousands(iso + hetero))
+                    }
+                    EdgesShown::Isotypic => format!("{iso_s} iso of {}", thousands(iso + hetero)),
+                }
             } else {
                 thousands(links.edges.len())
             };
