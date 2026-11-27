@@ -43,8 +43,10 @@ hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
 data-beans = { version = "0.14", default-features = false, features = ["aux", "alg", "tensor", "sim"] }
-legume-numeric = { version = "0.10.10", features = ["matrix", "param", "candle", "mcmc"] }
+legume-numeric = { version = "0.10.16", features = ["matrix", "param", "candle", "mcmc"] }
 graph-embedding-util = { version = "0.14", package = "legume-graph-embedding" }
+# Per-cell covariates as a second axis of batch, shared with senna and chickpea.
+genomic-data = { version = "0.6.5", package = "legume-genomic-types" }
 parquet = "59"
 arrow-array = "59"
 arrow-schema = "59"

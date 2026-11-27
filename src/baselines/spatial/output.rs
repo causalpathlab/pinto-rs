@@ -239,6 +239,11 @@ pub fn write_run(
             batch_effects,
             delta_cells,
             cell_pb: fit.pseudobulk.as_ref().map(|_| cell_pb_path(prefix)),
+            covariates: data
+                .delta
+                .as_ref()
+                .filter(|d| d.covariates)
+                .map(|_| crate::util::metadata::covariate_files(prefix)),
             ..Default::default()
         },
         batch_labels: data.delta.as_ref().map(|_| BatchLabels::of(&input.batch)),

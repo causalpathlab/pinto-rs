@@ -436,6 +436,7 @@ enum Fit {
                       \x20 {out}.delta.parquet           Batch effects δ (multi-sample only;\n\
                       \x20                                named in the manifest)\n\
                       \x20 {out}.delta_cells.parquet     Each cell's batch, as δ's columns name it\n\
+                      \x20 {out}.covariate*.{json,parquet} Per-cell covariates binned into δ's labels\n\
                       \x20 {out}.feature_graph.parquet      Feature-feature pairs (feature-pair mode only)\n\
                       \x20 {out}.L{l}.*.parquet          Per-cascade-level outputs (unless --no-level-outputs)\n\
                       \x20 {out}.draft.*.parquet         Pre-merge fine partition (when a --merge-cut collapsed)\n\
@@ -500,6 +501,7 @@ enum Fit {
                       Outputs:\n\
                       - {out}.delta.parquet: batch effects (when multi-batch)\n\
                       - {out}.delta_cells.parquet: each cell's batch, as δ's columns name it\n\
+                      - {out}.covariate*.{json,parquet}: per-cell covariates binned into δ's labels\n\
                       - {out}.coord_pairs.parquet: cell pair coordinates\n\
                       - {out}.basis.parquet: SVD basis (2G x T)\n\
                       - {out}.latent.parquet: per-pair latent codes (E x T)\n\
@@ -598,6 +600,7 @@ enum Fit {
                       \x20 {out}.delta.parquet           batch effects (multi-batch only;\n\
                       \x20                                optional `--cnv-clones` on the δ path)\n\
                       \x20 {out}.delta_cells.parquet     each cell's batch, as δ's columns name it\n\
+                      \x20 {out}.covariate*.{json,parquet} per-cell covariates binned into δ's labels\n\
                       \x20 {out}.pinto.json           manifest"
     )]
     Cage(Box<CellActivityGraphEmbeddingArgs>),

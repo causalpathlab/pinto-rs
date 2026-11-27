@@ -66,8 +66,10 @@ pub struct PredictArgs {
 }
 
 /// The flags `pinto apply predict` and `pinto apply impute` share: the query, the
-/// model, and how the model is applied to the query.
+/// model, and how the model is applied to the query. The query's covariate
+/// bins are the model's, so the covariate flags are off their help.
 #[derive(Args, Debug, Clone)]
+#[command(mut_args(crate::util::covariates::hide_on_queries))]
 pub struct PredictCoreArgs {
     #[command(flatten)]
     pub common: crate::util::input::SrtInputArgs,
@@ -439,11 +441,15 @@ pub fn predict_cage(
     let peek_names = data_beans::convert::try_open_or_convert(&c.data_files[0])?.row_names()?;
     let feature_kind = args.feature_name_mode.resolve_kind(&peek_names);
 
+    // A model that binned its cells' covariates bins the query's alike, so
+    // each query cell takes the δ column its bin names.
+    let covariate_model = crate::util::covariates::recorded(run)?;
     let SrtPreprocessed {
         data_vec,
         coordinates,
         coordinate_names,
         batch_membership,
+        delta_membership,
         section_ids: _,
         batch_labels: query_batches,
         batch_effects: estimate,
@@ -457,6 +463,7 @@ pub fn predict_cage(
         base_batch_corrected,
         ..
     } = preprocess_srt(SrtPreprocessConfig {
+        covariate_model: covariate_model.as_ref(),
         common: c,
         ablation: None,
         batch_effects: batch_plan,
@@ -658,7 +665,7 @@ pub fn predict_cage(
          check --coord and the neighbourhood flags (-k / --knn-expr)"
     );
 
-    let batch_of_cell = crate::util::batch_effects::batch_ids(&batch_membership, &query_batches);
+    let batch_of_cell = crate::util::batch_effects::batch_ids(&delta_membership, &query_batches);
 
     let rows = data_vec.row_names()?;
     // The estimate in full (its spread too), on this sample's rows, by
@@ -857,6 +864,7 @@ pub fn predict_cage(
                 labels: BatchLabels::of(&c.batch),
                 cells: false,
                 fold: crate::util::batch_fold::FoldWritten::None,
+                covariates: false,
             }),
         },
         None,

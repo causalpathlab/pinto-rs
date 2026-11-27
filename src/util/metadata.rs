@@ -400,6 +400,12 @@ pub struct OutputFiles {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiles_divided_by: Option<crate::util::batch_fold::ProfilesDividedBy>,
 
+    /// The per-cell covariates binned into δ's labels (`batch|cvK`), when
+    /// they were ([`crate::util::covariates`]). Absent: δ is over the plain
+    /// batches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covariates: Option<CovariateFiles>,
+
     /// Cosine dictionary-merge artifacts: the merge tree, and its consensus
     /// cut when `--merge-cut` was given. Absent when the merge did not run.
     /// Without a cut, or when the cut collapses nothing, the draft is the
@@ -472,6 +478,16 @@ pub struct OutputFiles {
     /// held-out log-likelihood beside the pooled K = 1 profile's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub predictive: Option<String>,
+}
+
+/// What a fit that binned covariates wrote beside its run, relative to its
+/// manifest: the model that bins new cells, each cell's scores and label,
+/// and each gene's covariate effect (from δ).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CovariateFiles {
+    pub model: String,
+    pub cells: String,
+    pub effect: String,
 }
 
 /// What the dictionary merge actually did, when it wrote its tree. `None`

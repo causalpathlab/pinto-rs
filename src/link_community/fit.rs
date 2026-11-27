@@ -79,6 +79,8 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         coordinates,
         coordinate_names,
         batch_membership,
+        delta_membership,
+        covariates_binned,
         section_ids,
         seeding,
         batch_labels,
@@ -95,6 +97,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
         ablation,
         permuted_coordinates: _,
     } = preprocess_srt(SrtPreprocessConfig {
+        covariate_model: None,
         common: c,
         ablation: Some(&args.ablation),
         batch_effects: BatchEstimate::Fit,
@@ -358,7 +361,7 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
     // the profiles are.
     let batch_of_cell = batch_effects
         .as_ref()
-        .map(|_| crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels));
+        .map(|_| crate::util::batch_effects::batch_ids(&delta_membership, &batch_labels));
     let partition_inputs = PartitionInputs {
         edges,
         edge_kind,
@@ -558,9 +561,9 @@ pub fn fit_srt_link_community(args: &SrtLinkCommunityArgs) -> anyhow::Result<()>
                 k,
                 graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
                 ablation,
-                delta: batch_effects
-                    .is_some()
-                    .then(|| crate::util::metadata::DeltaWritten::fit(c).with_fold(fold_written)),
+                delta: batch_effects.is_some().then(|| {
+                    crate::util::metadata::DeltaWritten::fit(c, fold_written, covariates_binned)
+                }),
             },
             merge.summary,
             // What `lc` can report is the structural fact of the axis, not a

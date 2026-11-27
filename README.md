@@ -64,6 +64,31 @@ batch effects δ, as dsvd and cage do. The manifest names `{out}.delta.parquet`,
 and `{out}.delta_cells.parquet` with each cell's batch. `--ignore-batch` fits
 without δ.
 
+#### Per-cell covariates
+
+Every fit also bins per-cell nuisance programs (cell cycle, mitochondrial
+and ribosomal shares, sex, dissociation stress, hypoxia, interferon) as a
+second axis of batch, with the same implementation, flags and defaults as
+senna and chickpea (legume-genomic-types' `covariate` module). Each chosen
+covariate's gene sets are scored per cell, the scores are binned together
+(a Gaussian mixture, the number of bins chosen by ICL, at most 10), and a
+cell's δ label becomes `batch|cvK`, so δ is estimated per batch and bin.
+`--covariate all` (the default) bins the covariates whose genes match and
+that show groups of their own, a list (`--covariate mito,cycle`) bins
+exactly those, and `none` bins nothing; `--covariate-genes` adds gene sets
+of your own. One batch is enough: its cells' bins are δ's levels.
+
+The bins drive δ alone. Sections, the pair table, the viewer and cage's
+per-batch training keep the plain batch labels, and each cell of a pair is
+divided by its own bin's δ. A fit on feature modules (or on
+`--feature-inclusion moran`'s features) scores the covariates on the genes
+the modules came from. A fit writes `{out}.covariate_model.json` (what
+bins new cells), `{out}.covariates.parquet` (each cell's scores and δ
+label) and `{out}.covariate_effect.parquet` (each row's log δ per bin,
+centred over the bins: a gene, or a module on a module fit), all recorded in the manifest. `pinto apply
+predict` and `impute` bin their query cells by the model's recorded
+covariates. Nothing is binned under `--ignore-batch`.
+
 #### The state-aware batch fold
 
 δ is one fold per feature and batch. A donor's effect that differs by cell

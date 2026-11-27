@@ -136,7 +136,13 @@ pub(crate) fn every_batch_known(
             names
         }
     };
-    Ok(match_batches(&labels, c, model, naming)
+    // a model that binned covariates names its δ columns `batch|cvK`; a
+    // query cell of a batch it knows is binned into that batch's own bins
+    let model_batches: Vec<Box<str>> = model
+        .iter()
+        .map(|m| crate::util::covariates::plain_batch(m).unwrap_or_else(|_| m.clone()))
+        .collect();
+    Ok(match_batches(&labels, c, &model_batches, naming)
         .iter()
         .all(Option::is_some))
 }
@@ -328,6 +334,14 @@ pub(crate) fn adjusted_query_delta(
         return Ok(None);
     }
     let (model_delta, path) = adjusted_model_delta(model, run)?;
+    // binned as the model's cells were, when it binned covariates
+    let binned = crate::util::covariates::bin_query(
+        crate::util::covariates::recorded(run)?.as_ref(),
+        c.batch.ignore_batch,
+        data,
+        membership,
+    )?;
+    let membership = binned.as_deref().unwrap_or(membership);
     let naming = ModelNaming::of(run);
     let labels = sorted_batch_labels(membership);
     let all_known = every_batch_known(c, &model_delta.batches, &naming)?;
