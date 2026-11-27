@@ -38,7 +38,9 @@ explicit feature-modules is refused. Ablations are fits (lc, dsvd, cage \
 or a baseline) with run_fit's ablation flags (permute-coords, drop-features, \
 mask-cells with ablation-parent); `run_region` turns a polygon into the cell \
 list mask-cells takes; `run_compare` sets two runs' communities against each \
-other; `run_predict` scores held-out cells on a fitted model.";
+other; `run_predict` scores held-out cells on a fitted model; \
+`run_donor_deviation` runs stage 2 on a finished cage or dsvd run: which \
+genes deviate in a donor against its matched other-donor pairs.";
 
 const SIMULATE: &str = "\
 Simulation with a planted truth, step by step. 1. `run_simulate` (a background \
