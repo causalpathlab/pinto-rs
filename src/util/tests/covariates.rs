@@ -97,11 +97,19 @@ fn nothing_is_binned_without_a_delta() {
     let dir = tempfile::tempdir().unwrap();
     let data = two_batches(dir.path());
     let out = dir.path().join("fit").to_str().unwrap().to_string();
-    // the default `all` bins nothing without a δ; a list asked for is refused
+    // a binned fit first, so its files are there to go stale
+    preprocess_with(&data, &out, &BINNED, BatchEstimate::Fit);
+    assert!(!files::all(&out).is_empty());
+    // the default `all` bins nothing without a δ, and leaves no earlier
+    // fit's file under its prefix; a list asked for is refused
     let pre = preprocess_with(&data, &out, &["--ignore-batch"], BatchEstimate::Fit);
     assert!(!pre.covariates_binned);
     assert_eq!(pre.delta_membership, pre.batch_membership);
-    assert!(!std::path::Path::new(&files::model(&out)).exists());
+    assert_eq!(
+        files::all(&out),
+        Vec::<String>::new(),
+        "stale files removed"
+    );
     let named = SrtInputArgs::try_parse_from(
         [
             "pinto",
