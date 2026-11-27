@@ -29,9 +29,8 @@ const BLOCK: usize = 1024;
 /// A loaded `SparseIoVec` as the shared module reads it: its columns, or
 /// the columns `cols` in that order (the fit's cells in the gene files).
 ///
-/// The same as senna's adapter, with the column map. It stays here until
-/// the user decides whether data-beans takes one `impl ColumnBlocks for
-/// SparseIoVec` for every tool.
+/// The same as senna's adapter, with the column map: each tool keeps its
+/// own, as agreed with senna and chickpea.
 struct Blocks<'a> {
     data: &'a SparseIoVec,
     cols: Option<Vec<usize>>,
@@ -134,14 +133,8 @@ pub fn bin_cells(
         CovariateBins::Off => Ok(None),
         CovariateBins::Fit => {
             if !args.enabled(&[(ignore_batch, "--ignore-batch, which estimates no δ")])? {
-                return Ok(None);
+                return none_modelled(out);
             }
-            let several = plain.iter().any(|b| b != &plain[0]);
-            let proj = data.project_columns_with_batch_correction(
-                c.collapse.proj_dim,
-                None,
-                several.then_some(plain),
-            )?;
             // the genes, when the fit reads rows derived from them
             let genes = c
                 .scored_data_files
@@ -158,11 +151,20 @@ pub fn bin_cells(
                 Some(g) => Blocks::of_cells(g, &cells)?,
                 None => Blocks::all(data),
             };
-            let Some(m) = genomic_data::covariate::model_covariates(
-                &blocks, plain, &proj.proj, args, None, BLOCK,
-            )?
+            // scored first: the projection only when there is a score to bin
+            let Some(scored) =
+                genomic_data::covariate::score_covariates(&blocks, args, None, BLOCK)?
             else {
-                return Ok(None);
+                return none_modelled(out);
+            };
+            let several = plain.iter().any(|b| b != &plain[0]);
+            let proj = data.project_columns_with_batch_correction(
+                c.collapse.proj_dim,
+                None,
+                several.then_some(plain),
+            )?;
+            let Some(m) = scored.bin(plain, &proj.proj)? else {
+                return none_modelled(out);
             };
             if let Some(out) = out {
                 m.model.write(Path::new(&files::model(out)))?;
@@ -182,6 +184,20 @@ pub fn bin_cells(
             Ok(Some(m.labels))
         }
     }
+}
+
+/// A fit that bins nothing: no labels, and no covariate file an earlier fit
+/// left under `out`, so none is read as this fit's.
+///
+/// # Errors
+/// A stale file that cannot be removed.
+fn none_modelled(out: Option<&str>) -> anyhow::Result<Option<Vec<Box<str>>>> {
+    if let Some(out) = out {
+        for stale in files::clear_stale(out)? {
+            info!("--covariate: removed {stale}, an earlier fit's");
+        }
+    }
+    Ok(None)
 }
 
 /// A query's cells binned by its model's recorded covariates (`model`),
