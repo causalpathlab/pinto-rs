@@ -4,6 +4,7 @@ pub mod batch_fold;
 pub mod cell_pairs;
 pub mod cli;
 pub mod common;
+pub mod covariates;
 pub mod coverage;
 pub mod device;
 pub mod dictionary_rows;

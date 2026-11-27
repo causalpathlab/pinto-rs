@@ -67,22 +67,46 @@ pub struct DeltaWritten {
     pub cells: bool,
     /// The state-aware fold written beside it.
     pub fold: crate::util::batch_fold::FoldWritten,
+    /// Its labels carry covariate bins, and the covariate files were
+    /// written beside it.
+    pub covariates: bool,
 }
 
 impl DeltaWritten {
-    /// A fit's δ, with its cells, for a run with inputs `c`.
-    pub fn fit(c: &crate::util::input::SrtInputArgs) -> Self {
+    /// A fit's δ, with its cells, for a run with inputs `c`: the fold it
+    /// wrote beside it, and whether its labels carry covariate bins.
+    pub fn fit(
+        c: &crate::util::input::SrtInputArgs,
+        fold: crate::util::batch_fold::FoldWritten,
+        covariates: bool,
+    ) -> Self {
         Self {
             labels: BatchLabels::of(&c.batch),
             cells: true,
-            fold: crate::util::batch_fold::FoldWritten::None,
+            fold,
+            covariates,
         }
     }
+}
 
-    /// The same, with the fold the fit wrote beside it.
-    pub fn with_fold(self, fold: crate::util::batch_fold::FoldWritten) -> Self {
-        Self { fold, ..self }
+/// The covariate files a fit under `prefix` writes, relative to its
+/// manifest.
+pub(crate) fn covariate_files(prefix: &str) -> crate::util::metadata::CovariateFiles {
+    use crate::util::covariates::files;
+    let name = manifest_stem(prefix);
+    crate::util::metadata::CovariateFiles {
+        model: files::model(&name),
+        cells: files::cells(&name),
+        effect: files::effect(&name),
     }
+}
+
+/// The covariate files a run with `inputs` wrote, when its δ carries bins.
+fn covariate_outputs(inputs: &RunInputs<'_>) -> Option<crate::util::metadata::CovariateFiles> {
+    inputs
+        .delta
+        .filter(|d| d.covariates)
+        .map(|_| covariate_files(inputs.prefix))
 }
 
 /// The fold files and what the profiles were divided by, for a run with
@@ -208,6 +232,7 @@ pub fn create_lc_metadata(
             delta_cells,
             batch_fold,
             profiles_divided_by,
+            covariates: covariate_outputs(inputs),
             dict_merge,
             ..Default::default()
         },
@@ -265,6 +290,7 @@ pub fn create_dsvd_metadata(inputs: &RunInputs<'_>) -> PintoMetadata {
             delta_cells,
             batch_fold,
             profiles_divided_by,
+            covariates: covariate_outputs(inputs),
             ..Default::default()
         },
         levels: Some(levels),
@@ -328,6 +354,7 @@ pub fn create_cage_metadata(
             delta_cells,
             batch_fold,
             profiles_divided_by,
+            covariates: covariate_outputs(inputs),
             cell_embedding: Some(format!("{prefix}.cell_embedding.parquet")),
             pair_encoder: Some(format!("{prefix}.pair_encoder.safetensors")),
             pb_pair_embedding: Some(crate::util::parquet_io::pb_pair_embedding_path(prefix)),

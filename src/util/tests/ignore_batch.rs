@@ -48,6 +48,7 @@ pub(super) fn preprocess_with(
     argv.extend_from_slice(extra);
     let args = SrtInputArgs::try_parse_from(argv).expect("args should parse");
     preprocess_srt(SrtPreprocessConfig {
+        covariate_model: None,
         common: &args,
         ablation: None,
         batch_effects: batch,
@@ -126,6 +127,7 @@ fn dsvd_takes_preprocessings_projection_when_it_is_its_own() {
         argv.extend(extra);
         let args = SrtInputArgs::try_parse_from(argv).unwrap();
         let pre = preprocess_srt(SrtPreprocessConfig {
+            covariate_model: None,
             common: &args,
             ablation: None,
             batch_effects: BatchEstimate::Fit,

@@ -121,13 +121,17 @@ pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, V
 
     let peek_names = data_beans::convert::try_open_or_convert(&c.data_files[0])?.row_names()?;
     let feature_kind = args.core.feature_name_mode.resolve_kind(&peek_names);
+    // held-out cells binned by the model's covariates, so each batch the
+    // model knows finds its δ columns
+    let covariate_model = crate::util::covariates::recorded(run)?;
     let SrtPreprocessed {
         data_vec,
         graph,
-        batch_membership,
+        delta_membership,
         batch_labels,
         ..
     } = preprocess_srt(SrtPreprocessConfig {
+        covariate_model: covariate_model.as_ref(),
         common: c,
         ablation: None,
         // The model's profiles are what is scored; δ is estimated below from
@@ -324,7 +328,7 @@ pub fn predict_profiles(args: &PredictArgs, run: &Run) -> anyhow::Result<(Mat, V
     // Batches: one δ each. A pair's batch is its first cell's (the graph keeps
     // sections apart). A batch the model knows takes the model's δ, fixed,
     // when its profiles are batch-adjusted; the rest start at 1.
-    let batch_of = crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels);
+    let batch_of = crate::util::batch_effects::batch_ids(&delta_membership, &batch_labels);
     let batch_of: Vec<usize> = batch_of.into_iter().map(|b| b as usize).collect();
     let n_batches = batch_labels.len();
     let mut delta = vec![vec![1.0f64; g]; n_batches];

@@ -67,6 +67,7 @@ fn metadata_roundtrip_lc() {
                 labels: BatchLabels::Files,
                 cells: true,
                 fold: crate::util::batch_fold::FoldWritten::None,
+                covariates: false,
             }),
         },
         Some(DictMergeSummary {
@@ -149,6 +150,7 @@ fn metadata_roundtrip_cage() {
                 labels: BatchLabels::Files,
                 cells: true,
                 fold: crate::util::batch_fold::FoldWritten::None,
+                covariates: false,
             }),
         },
         Some(SpliceTrackInfo {
@@ -595,6 +597,7 @@ fn a_fit_records_canonical_data_files_and_its_batch_labels() {
             labels,
             cells: true,
             fold: crate::util::batch_fold::FoldWritten::None,
+            covariates: false,
         }),
     };
     let meta = create_cage_metadata(&inputs(Some(BatchLabels::Files)), None);
@@ -636,6 +639,7 @@ fn a_fit_records_canonical_data_files_and_its_batch_labels() {
             labels: BatchLabels::Files,
             cells: false,
             fold: crate::util::batch_fold::FoldWritten::None,
+            covariates: false,
         }),
         ..inputs(None)
     };

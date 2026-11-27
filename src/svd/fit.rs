@@ -179,6 +179,8 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         coordinates,
         coordinate_names,
         batch_membership,
+        delta_membership,
+        covariates_binned,
         section_ids: _,
         seeding,
         batch_labels,
@@ -195,6 +197,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         ablation,
         permuted_coordinates: _,
     } = preprocess_srt(SrtPreprocessConfig {
+        covariate_model: None,
         common: c,
         ablation: Some(&args.ablation),
         batch_effects: BatchEstimate::Fit,
@@ -231,7 +234,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
         batch_db.is_some(),
         c,
         &data_vec,
-        &batch_membership,
+        &delta_membership,
     )?;
 
     // 5. Graph-constrained coarsening + multi-level assignment
@@ -359,7 +362,7 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
     let batch_of_cell = nystrom_input
         .batch_effect
         .as_ref()
-        .map(|_| crate::util::batch_effects::batch_ids(&batch_membership, &batch_labels));
+        .map(|_| crate::util::batch_effects::batch_ids(&delta_membership, &batch_labels));
 
     // Leiden by default, same as `cage`: the SVD width is chosen for how much
     // variance to keep, which is no reason for the pairs to fall into exactly
@@ -405,8 +408,9 @@ pub fn fit_srt_delta_svd(args: &SrtDeltaSvdArgs) -> anyhow::Result<()> {
             graph: crate::util::metadata::GraphParams::of(&knn, base_batch_corrected),
             ablation,
             k: n_clusters,
-            delta: has_batch_effects
-                .then(|| crate::util::metadata::DeltaWritten::fit(c).with_fold(fold_written)),
+            delta: has_batch_effects.then(|| {
+                crate::util::metadata::DeltaWritten::fit(c, fold_written, covariates_binned)
+            }),
         });
         let meta_path = std::path::PathBuf::from(crate::util::metadata::manifest_path(&c.out));
         meta.write(&meta_path)?;

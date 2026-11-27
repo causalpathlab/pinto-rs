@@ -2,6 +2,7 @@ mod ablation;
 mod batch_effects;
 mod batch_fold;
 mod cell_pairs;
+mod covariates;
 mod dictionary_rows;
 mod edge_clustering;
 mod expression_graph;

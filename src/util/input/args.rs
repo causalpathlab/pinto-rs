@@ -148,6 +148,13 @@ pub struct InputArgs {
 
     #[command(flatten)]
     pub qc: data_beans::qc_lib::QcArgs,
+
+    /// The feature files the data files were derived from, when a fit reads
+    /// other rows (`--feature-modules`' sums, `--feature-inclusion moran`'s
+    /// features): per-cell covariates are scored on these genes, cell for
+    /// cell ([`crate::util::covariates`]). Not a flag.
+    #[arg(skip)]
+    pub scored_data_files: Option<Vec<Box<str>>>,
 }
 
 /// Shared CLI arguments for spatial data input across all pinto subcommands.
@@ -305,6 +312,13 @@ impl std::ops::DerefMut for SrtInputArgs {
 ///
 /// Flatten this into an args struct with `#[command(flatten)]`.
 #[derive(clap::Args, Debug, Clone)]
+// the covariate bins' tuning, shared with senna and chickpea, works but is
+// off the help: the criterion chooses the bins
+#[command(
+    mut_arg("covariate_bins", |a| a.hide(true)),
+    mut_arg("covariate_bins_max", |a| a.hide(true)),
+    mut_arg("covariate_criterion", |a| a.hide(true))
+)]
 pub struct BatchArgs {
     #[arg(
         long,
@@ -337,6 +351,12 @@ pub struct BatchArgs {
                      only the correction goes."
     )]
     pub ignore_batch: bool,
+
+    /// Per-cell covariates as a second axis of batch, for δ alone
+    /// ([`crate::util::covariates`]). A query is binned by its model's
+    /// recorded covariates, so `predict` and `impute` hide these.
+    #[command(flatten)]
+    pub covariates: crate::util::covariates::CovariateArgs,
 }
 
 /// How the δ estimate collapses the cells: the `--cnv-clones` strata, the

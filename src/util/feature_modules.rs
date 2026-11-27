@@ -345,6 +345,8 @@ fn write_rows(
         lb += n_j;
     }
     input.data_files = new_files;
+    // the covariates' genes are the features these rows came from
+    input.scored_data_files.get_or_insert(files);
     if input.batch.batch_files.is_some() {
         input.batch.batch_files = Some(new_batches);
     }
@@ -379,6 +381,7 @@ pub fn prepare_moran(input: &mut InputArgs) -> anyhow::Result<FeatureModulesInfo
     srt.input = input.clone();
     srt.input.out = format!("{dir}/score").into();
     let pre = preprocess_srt(SrtPreprocessConfig {
+        covariate_model: None,
         common: &srt,
         ablation: None,
         batch_effects: BatchEstimate::Skip,

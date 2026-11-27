@@ -76,8 +76,9 @@ pub struct SpatialData {
     pub xy: Mat,
     /// The coordinate columns' names.
     pub coord_names: Vec<Box<str>>,
-    /// Each cell's batch label, what δ is estimated over: as the reader
-    /// gives it, or its `--auto-batch` component.
+    /// Each cell's batch label: as the reader gives it, or its
+    /// `--auto-batch` component. δ is estimated over these, or over them
+    /// with covariate bins (`batch|cvK`) when covariates are binned.
     pub batches: Vec<Box<str>>,
     /// Each cell's section, 0..n_sections, in order of first appearance.
     pub section: Vec<usize>,
@@ -104,8 +105,10 @@ pub type PairGraph = (Vec<(usize, usize)>, Vec<f32>);
 /// each cell's batch beside it.
 #[derive(Debug, Clone)]
 pub struct AppliedDelta {
-    /// δ's columns, the batch labels sorted.
+    /// δ's columns, the batch labels sorted (`batch|cvK` with covariates).
     pub batches: Vec<Box<str>>,
+    /// Its labels carry covariate bins ([`crate::util::covariates`]).
+    pub covariates: bool,
 }
 
 impl SpatialData {
@@ -326,7 +329,9 @@ impl SpatialInputArgs {
             "a spatial baseline needs coordinate files (-c), one per data file"
         );
         let srt = SrtInputArgs::with_input(self.input.clone());
-        let stored = if self.batch.auto_relabels() {
+        // δ's labels are known only once the components or the covariate
+        // bins are: checked then
+        let stored = if self.batch.auto_relabels() || self.batch.covariates.is_on()? {
             self.stored()?
         } else {
             None
@@ -336,10 +341,11 @@ impl SpatialInputArgs {
                 return Ok(());
             };
             ensure_fits(
-                "the δ estimate over the --auto-batch components",
+                "the δ estimate over the --auto-batch components or covariate bins",
                 process + self.auto_batch_delta_bytes(s, groups, n_batches),
                 budget,
-                "drop --auto-batch, or pass --batch-files with fewer labels",
+                "drop --auto-batch, pass --batch-files with fewer labels, or \
+                 --covariate none",
             )
         };
         let SrtPreprocessed {
@@ -347,6 +353,7 @@ impl SpatialInputArgs {
             coordinates,
             coordinate_names,
             batch_membership,
+            covariates_binned,
             section_ids,
             batch_effects,
             cell_fold,
@@ -356,6 +363,7 @@ impl SpatialInputArgs {
             graph,
             ..
         } = preprocess_srt(SrtPreprocessConfig {
+            covariate_model: None,
             common: &srt,
             ablation: Some(&self.ablation),
             batch_effects: BatchEstimate::Fit,
@@ -371,6 +379,7 @@ impl SpatialInputArgs {
         let genes = data_vec.row_names()?;
         let delta = batch_effects.as_ref().map(|p| AppliedDelta {
             batches: p.batches.clone(),
+            covariates: covariates_binned,
         });
         let mean = batch_effects.map(|p| p.into_mean()).transpose()?;
         // each count divided by its cell's own fold (its gene's δ in its
