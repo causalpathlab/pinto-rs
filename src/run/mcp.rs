@@ -31,6 +31,7 @@ impl Default for Tools {
         let cli = crate::built_cli();
         let mut specs = specs(&cli);
         specs.extend(super::sim::specs(&cli));
+        specs.extend(super::donor_deviation::specs(&cli));
         Tools { cli, specs }
     }
 }
@@ -46,6 +47,9 @@ impl Handler for Tools {
             "run_fit" => self.fit(parse(args)?, cx),
             "run_compare" => compare(&self.cli, parse(args)?, cx),
             "run_predict" => self.predict(parse(args)?, cx),
+            "run_donor_deviation" => {
+                super::donor_deviation::donor_deviation(&self.cli, parse(args)?, cx)
+            }
             "run_region" => region(parse(args)?, cx),
             "run_lra" => super::lra::lra(&self.cli, parse(args)?, cx),
             "run_lra_simulate" => super::lra::lra_simulate(&self.cli, parse(args)?, cx),
@@ -195,29 +199,7 @@ impl Tools {
                 a.data.len()
             );
         }
-        for (flag, value) in &a.flags {
-            let flag = flag.trim_start_matches('-');
-            anyhow::ensure!(
-                flag != MAX_THREADS,
-                "give --{MAX_THREADS} as max_threads, not as a flag"
-            );
-            anyhow::ensure!(
-                flag != ATOMIC_OUTPUTS,
-                "give --{ATOMIC_OUTPUTS} as atomic_outputs, not as a flag"
-            );
-            let field = method.field_mut(flag).ok_or_else(|| {
-                anyhow::anyhow!("{} has no flag --{flag}: {lister} lists them", a.method)
-            })?;
-            let long = field.long.clone();
-            field.value = match (&field.kind, value) {
-                (Kind::Flag { .. }, Value::Bool(on)) => on.to_string(),
-                (Kind::Flag { .. }, v) => {
-                    anyhow::bail!("--{long} is a switch: true or false, not {v}")
-                }
-                (_, Value::Array(vs)) => vs.iter().map(text).collect::<Vec<_>>().join(","),
-                (_, v) => text(v),
-            };
-        }
+        fill_flags(&mut method, &a.flags, lister)?;
         // An `out` naming a folder, or a header, is named for the method,
         // as `pinto run` names it; `.` is this folder.
         let out = if a.out == "." {
@@ -264,6 +246,42 @@ impl Tools {
         reply[key] = vec![shown_path(&manifest)].into();
         Ok((reply, manifest))
     }
+}
+
+/// `method`'s rows set from `flags`, by name, as run_methods lists them (a
+/// switch takes true or false, a list is joined by commas); `lister` is
+/// where an unknown flag's error points. The threads and atomic outputs
+/// are the tools' own fields, not flags.
+pub(super) fn fill_flags(
+    method: &mut Method,
+    flags: &Map<String, Value>,
+    lister: &str,
+) -> anyhow::Result<()> {
+    for (flag, value) in flags {
+        let flag = flag.trim_start_matches('-');
+        anyhow::ensure!(
+            flag != MAX_THREADS,
+            "give --{MAX_THREADS} as max_threads, not as a flag"
+        );
+        anyhow::ensure!(
+            flag != ATOMIC_OUTPUTS,
+            "give --{ATOMIC_OUTPUTS} as atomic_outputs, not as a flag"
+        );
+        let name = method.name.clone();
+        let field = method
+            .field_mut(flag)
+            .ok_or_else(|| anyhow::anyhow!("{name} has no flag --{flag}: {lister} lists them"))?;
+        let long = field.long.clone();
+        field.value = match (&field.kind, value) {
+            (Kind::Flag { .. }, Value::Bool(on)) => on.to_string(),
+            (Kind::Flag { .. }, v) => {
+                anyhow::bail!("--{long} is a switch: true or false, not {v}")
+            }
+            (_, Value::Array(vs)) => vs.iter().map(text).collect::<Vec<_>>().join(","),
+            (_, v) => text(v),
+        };
+    }
+    Ok(())
 }
 
 /// The command line checked as pinto parses it.

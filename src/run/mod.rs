@@ -5,6 +5,7 @@
 //! them in turn. Each command is kept as `{out}.cmd.sh`, a script that
 //! runs it again and refuses to run over a result already there.
 
+mod donor_deviation;
 pub(crate) mod form;
 pub(crate) mod lra;
 mod lra_cluster;

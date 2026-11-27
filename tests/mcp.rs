@@ -171,7 +171,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
     // pinto run's, the view's own, then what the protocol adds (the
     // records' notebook, the jobs).
     assert_eq!(
-        names[..19],
+        names[..20],
         [
             "run_methods",
             "run_fit",
@@ -186,6 +186,7 @@ fn an_agent_opens_a_run_looks_at_it_and_asks_about_it() {
             "run_sim_score_by_set",
             "run_sim_score_by_pair",
             "run_sim_baseline",
+            "run_donor_deviation",
             "view_open",
             "view_map",
             "view_markers",
@@ -630,6 +631,18 @@ fn an_agent_marks_a_region_to_mask() {
         json!({"model": prefix, "data": ["d.zarr"], "out": "p", "flags": {"no-such": 1}}),
     );
     assert!(msg.contains("--no-such"), "{msg}");
+
+    // run_donor_deviation too: its flags, and a stage-1 run that is there.
+    let msg = c.fails(
+        "run_donor_deviation",
+        json!({"model": prefix, "donor_of_batch": "d.tsv", "out": "s2", "flags": {"no-such": 1}}),
+    );
+    assert!(msg.contains("--no-such"), "{msg}");
+    let msg = c.fails(
+        "run_donor_deviation",
+        json!({"model": "nowhere", "donor_of_batch": "d.tsv", "out": "s2"}),
+    );
+    assert!(msg.contains("no such manifest"), "{msg}");
 }
 
 /// lra over the server: calls refused as pinto would refuse them, before

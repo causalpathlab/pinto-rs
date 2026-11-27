@@ -38,6 +38,18 @@ use crate::util::common::*;
 use legume_numeric::matrix::common_io::mkdir_parent;
 use legume_numeric::matrix::parquet::{write_named_table, Column};
 
+/// Every file stage 2 writes under `out`: the settings record, the gene
+/// table, its jackknife replicates and the pair table.
+pub(crate) fn output_paths(out: &str) -> [String; 4] {
+    [
+        "donor_deviation.json",
+        "donor_gene_deviation.parquet",
+        "donor_gene_deviation_without_section.parquet",
+        "donor_pair_states.parquet",
+    ]
+    .map(|end| format!("{out}.{end}"))
+}
+
 /// `state_axis_1`, `state_axis_2`, ...: the names of the state axes, shared
 /// by the gene table's coefficients and the pair table's coordinates.
 fn state_axis_names(number_of_state_axes: usize) -> Vec<Box<str>> {
@@ -74,17 +86,14 @@ pub(crate) fn write_donor_deviation_outputs(
     results: &DonorDeviationResults,
 ) -> anyhow::Result<()> {
     mkdir_parent(out)?;
+    let [_, genes, without_section, pair_states] = output_paths(out);
+    write_gene_table(&genes, results, WhichFits::FullFits)?;
     write_gene_table(
-        &format!("{out}.donor_gene_deviation.parquet"),
-        results,
-        WhichFits::FullFits,
-    )?;
-    write_gene_table(
-        &format!("{out}.donor_gene_deviation_without_section.parquet"),
+        &without_section,
         results,
         WhichFits::RefitsWithoutEachSection,
     )?;
-    write_pair_state_table(out, results)?;
+    write_pair_state_table(&pair_states, results)?;
     Ok(())
 }
 
@@ -145,7 +154,7 @@ fn write_gene_table(
     Ok(())
 }
 
-fn write_pair_state_table(out: &str, results: &DonorDeviationResults) -> anyhow::Result<()> {
+fn write_pair_state_table(path: &str, results: &DonorDeviationResults) -> anyhow::Result<()> {
     let DonorDeviationResults {
         donor_names,
         pairs,
@@ -214,8 +223,7 @@ fn write_pair_state_table(out: &str, results: &DonorDeviationResults) -> anyhow:
     for (name, column) in axis_names.iter().zip(&coordinate_of_axis) {
         columns.push((name.clone(), Column::F32(column)));
     }
-    let path = format!("{out}.donor_pair_states.parquet");
-    write_named_table(&path, "left_cell", &pairs.left_cell_of_pair, &columns)?;
+    write_named_table(path, "left_cell", &pairs.left_cell_of_pair, &columns)?;
     info!("Wrote {path}");
     Ok(())
 }
@@ -240,7 +248,7 @@ pub(crate) fn write_settings_record(
         "pairs": args.pairs,
         "section_jackknife": "each section left out in turn, refitted from the full fit",
     });
-    let path = format!("{}.donor_deviation.json", args.out);
+    let [path, ..] = output_paths(&args.out);
     std::fs::write(&path, serde_json::to_string_pretty(&record)?)?;
     info!("Wrote {path}");
     Ok(())

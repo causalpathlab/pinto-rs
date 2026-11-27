@@ -30,7 +30,7 @@ mod contrast_fit;
 mod fit_genes;
 mod fit_units;
 mod matched_other_donor_pairs;
-mod outputs;
+pub(crate) mod outputs;
 mod same_section_gene_factor;
 mod section_jackknife;
 mod stage1_inputs;
