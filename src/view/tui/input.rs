@@ -180,7 +180,7 @@ impl App<'_> {
         // The structure plot: a click picks a community; nothing pans it.
         if self.bars.contains(Position::new(col, row)) {
             match m.kind {
-                MouseEventKind::Down(MouseButton::Left) if !self.curve_shows() => {
+                MouseEventKind::Down(MouseButton::Left) if !self.lra_chart_shows() => {
                     self.bar_click(col, row)
                 }
                 MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {

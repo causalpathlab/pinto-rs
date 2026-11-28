@@ -1104,6 +1104,8 @@ pinto view out --png pair.png --pair L1:R3 --pair-show exposure
 pinto view out --png curve.png --pdf curve.pdf --pair L1:R3 --curve
 pinto view out --png k3.png --pair L1:R3 --edges --bbox 8200,6800,8800,7250 \
   --lra-table out.lra.link-community-3.parquet   # through community 3's links
+pinto view out --png k3.png --pair L1:R3 --edges --type-pair 'B cell > T cell'
+pinto view out --png types.png --pair L1:R3 --type-heatmap   # links by type
 ```
 
 With edges on (`--edges`, or the edge key in the viewer), a pair's map
@@ -1114,6 +1116,19 @@ larger its share of that receiver's exposure (a ligand+ cell is drawn as a
 sender, though it can receive as well). A
 `--link-community K` table sums exposure over community K's links only, so
 cells with no community-K link are drawn as no receiver.
+
+With cell types (the table's `--cell-types` when that file is still there,
+else the run's newest lupin round, or `--lra-cell-types FILE` in their
+place), a pair's links are also read by sender type and receiver type, in
+both directions: per type pair its links, the active ones and their summed
+shares of the responders' exposure (a responder's shares sum to 1, so a
+receiver type's sum to its responders; responders count ligand+ cells that
+are exposed and receptor+ too). `--pair` prints the largest; `--type-pair
+'SENDER > RECEIVER'` draws only those links; `--type-heatmap` draws the
+shares as a heatmap, receiver type by sender type. In the viewer, `c` puts
+the curve, then the heatmap, under the map, and `y` steps the links through
+the type pairs; over MCP, `view_lra` lists them (`map.cell_types`) and takes
+`type_pair` and `cell_types`, and `view_map type_heatmap` draws them.
 
 In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, `<`/`>`
 shrink or grow the cell discs (`--point-size` for images), `l`/`L` step

@@ -118,7 +118,7 @@ fn a_link_community_table_draws_its_communitys_receivers_through_its_links() {
 
     // its links: community 1's in scope, every other one out
     let links = links_on(&base, &pairs);
-    let pair = pair_links(&links, rx, &on.map);
+    let pair = pair_links(&links, rx, &on.map, None);
     for (e, &(i, j)) in pairs.iter().enumerate() {
         assert_eq!(pair.in_scope[e], left(i) && left(j), "link {i}-{j}");
     }
@@ -148,7 +148,7 @@ fn a_responders_links_carry_its_whole_exposure() {
     // on the map's links, each the larger of its two directions
     let pairs = grid_pairs();
     let links = links_on(&base, &pairs);
-    let pair = pair_links(&links, &rx, &map);
+    let pair = pair_links(&links, &rx, &map, None);
     let row_of = |c: usize| rx.frame.cell.iter().position(|&x| x == c).unwrap();
     for (e, &(i, j)) in pairs.iter().enumerate() {
         let (a, b) = (row_of(i), row_of(j));

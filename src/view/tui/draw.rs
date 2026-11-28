@@ -106,8 +106,8 @@ impl App<'_> {
             }
             let mode = render::mode(&scene, &vp, self.point);
             if self.bars.height > 0 {
-                frame = if self.curve_shows() {
-                    self.with_curve(frame)
+                frame = if self.lra_chart_shows() {
+                    self.with_lra_chart(frame)
                 } else {
                     self.with_structure(frame)
                 };

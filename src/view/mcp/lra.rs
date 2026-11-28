@@ -33,6 +33,12 @@ pub(in crate::view) struct LraArgs {
     /// Start `pinto lra --only` on the marked pairs, or the one selected
     /// when none is (ctrl+r in the terminal), as a background job.
     start: bool,
+    /// A `cell`, `cell_type` table read in place of the tables' cell
+    /// types; `""` for theirs again.
+    cell_types: Option<String>,
+    /// `SENDER > RECEIVER`: the pair's links left to those from that cell
+    /// type to that one; `""` for all.
+    type_pair: Option<String>,
 }
 
 impl Open {
@@ -88,6 +94,11 @@ impl Open {
         }
         // What changes, checked before any of it is kept.
         let v = self.lra.as_mut().expect("read above");
+        let mut look = v.look.clone();
+        if let Some(file) = &a.cell_types {
+            let file = Some(file.clone()).filter(|f| !f.trim().is_empty());
+            look = look.with_cell_types(file)?;
+        }
         let mut filter = v.filter().clone();
         if let Some(search) = &a.search {
             filter.search = search.trim().to_string();
@@ -128,12 +139,18 @@ impl Open {
         // table switched to: drawn before anything is kept, as it is the
         // one thing left that can fail.
         let draw = selected.is_some() && (a.pair.is_some() || self.pair_drawn);
-        if let (true, Some(i)) = (draw, selected) {
-            let (row, options) = (table.rows[i].clone(), table.r.options.clone());
-            if v.needs_receivers_for(&options) {
-                progress("reading the run's receivers as lra saw them");
-            }
-            v.draw(&self.base, &options, &row, self.at)?;
+        let row = selected.map(|i| table.rows[i].clone());
+        let options = table.r.options.clone();
+        let read_with = look.options_of(&options);
+        if (draw || a.type_pair.is_some()) && v.needs_receivers_for(&read_with) {
+            progress("reading the run's receivers as lra saw them");
+        }
+        // the type pair by the cell types of the receivers the pair is read on
+        if let Some(text) = &a.type_pair {
+            look.focus = v.type_pair(&self.base, &read_with, text)?;
+        }
+        if let (true, Some(row)) = (draw, &row) {
+            v.draw(&self.base, &options, &look, row, self.at)?;
         }
         if let Some(s) = staged {
             v.commit(s);
@@ -155,6 +172,7 @@ impl Open {
         if let Some(show) = show {
             v.show = show;
         }
+        v.look = look;
         Ok(self.lra_reply(a.limit.unwrap_or(LIST)))
     }
 
@@ -233,6 +251,7 @@ impl Open {
                     "threshold": on.map.threshold,
                     "competence": on.map.competence,
                 });
+                out["map"]["cell_types"] = cell_types_reply(v, on);
                 out["drawn"] = self.pair_drawn.into();
             }
             out
@@ -280,7 +299,18 @@ impl Open {
                         cell is drawn as a sender, though it can receive too). \
                         curve: the threshold-response points (effect with its CI lo, hi \
                         and simultaneous band at each threshold tau); view_map curve: \
-                        true draws them under the map, view_export curve: true writes them.",
+                        true draws them under the map, view_export curve: true writes them. \
+                        map.cell_types: the pair's links by sender cell type and receiver \
+                        cell type (the table's cell types: its --cell-types, else the run's \
+                        newest lupin round; cell_types replaces them), each link read in \
+                        both directions: links (directed, in scope), active (into an \
+                        exposed receptor+ receiver), share (the summed shares of those \
+                        receivers' exposure: a responder's shares sum to 1, so a receiver \
+                        type's sum to its responders; responders: exposed receptor+ \
+                        receivers, ligand+ ones too, though the map draws those as senders), share_of_responders (share over \
+                        responders), largest share first; type_pair leaves the drawn links \
+                        to one sender type > receiver type; view_map type_heatmap: true \
+                        draws the shares as a heatmap.",
         })
     }
 }
@@ -297,5 +327,34 @@ fn find_table(tables: &[lra_layer::TableRef], name: &str) -> Option<usize> {
                 None => name.eq_ignore_ascii_case("full"),
                 Some(s) => s.only == canonical,
             }
+    })
+}
+
+/// Type pairs `view_lra` lists in `map.cell_types`, the largest share first.
+const TYPE_PAIRS: usize = 30;
+
+/// The drawn pair's links by cell type, as `view_lra` says them; `null`
+/// fields without cell types.
+fn cell_types_reply(v: &LraView, on: &lra_layer::OnMap) -> Value {
+    let from = v.cell_types_from();
+    let Some(t) = &on.types else {
+        return json!({"from": null, "note": lra_layer::NO_CELL_TYPES});
+    };
+    let responders = t.responders as f64;
+    json!({
+        "from": from,
+        "responders": t.responders,
+        "type_pair": v.look.focus_label(),
+        "type_pairs": t.cells.len(),
+        "links": t.cells.iter().take(TYPE_PAIRS).map(|c| {
+            let (sender, receiver) = t.names_of(c);
+            json!({
+            "sender": sender,
+            "receiver": receiver,
+            "links": c.links,
+            "active": c.active,
+            "share": c.share,
+            "share_of_responders": opt_finite(c.share / responders),
+        })}).collect::<Vec<_>>(),
     })
 }

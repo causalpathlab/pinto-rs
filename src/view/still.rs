@@ -20,12 +20,21 @@ use std::time::Instant;
 pub(super) fn write_still(args: &ViewArgs) -> anyhow::Result<()> {
     // Without a terminal to ask, `auto` means dark.
     let theme = args.theme.unwrap_or(Theme::Dark);
+    let typed = args.type_heatmap || args.type_pair.is_some();
     if let Some(pair) = args.pair.as_deref() {
+        anyhow::ensure!(
+            !(args.curve && typed),
+            "--curve draws the pair's curve alone: drop --type-heatmap and --type-pair"
+        );
+        anyhow::ensure!(
+            args.type_pair.is_none() || args.edges || args.type_heatmap,
+            "--type-pair leaves the pair's links to one type pair: give --edges to draw them"
+        );
         return write_pair_still(args, theme, pair);
     }
     anyhow::ensure!(
-        !args.curve,
-        "--curve draws an lra pair's curve: give --pair"
+        !(args.curve || typed || args.lra_cell_types.is_some()),
+        "--curve, --type-heatmap, --type-pair and --lra-cell-types draw an lra pair: give --pair"
     );
     let base = Base::load(args.prefix(), &args.units, theme)?;
     let mut level = match args.show {
@@ -135,7 +144,8 @@ fn print_written(args: &ViewArgs) {
 
 /// The lra layer for `--pair`: the table `--lra-table` names, else the
 /// run's first, with `pair` selected.
-fn pair_layer(run: &data::Run, table: Option<&str>, pair: &str) -> anyhow::Result<lra::LraView> {
+fn pair_layer(run: &data::Run, args: &ViewArgs, pair: &str) -> anyhow::Result<lra::LraView> {
+    let table = args.lra_table.as_deref();
     let tables = match table {
         Some(path) => vec![lra::TableRef::at(Path::new(path), run)],
         None => run.tables(),
@@ -147,6 +157,7 @@ fn pair_layer(run: &data::Run, table: Option<&str>, pair: &str) -> anyhow::Resul
             run.manifest.display()
         )
     })?;
+    view.set_cell_types(args.lra_cell_types.clone())?;
     view.select(pair)?;
     Ok(view)
 }
@@ -157,7 +168,7 @@ fn write_pair_still(args: &ViewArgs, theme: Theme, pair: &str) -> anyhow::Result
     let t = Instant::now();
     if args.curve {
         let run = data::Run::open(args.prefix())?;
-        let view = pair_layer(&run, args.lra_table.as_deref(), pair)?;
+        let view = pair_layer(&run, args, pair)?;
         let curve = view.curve().expect("a pair is selected");
         let w = args.width.max(1);
         let h = args.height.unwrap_or(curve::still_height(w));
@@ -172,9 +183,18 @@ fn write_pair_still(args: &ViewArgs, theme: Theme, pair: &str) -> anyhow::Result
         }
     } else {
         let base = Base::load(args.prefix(), &args.units, theme)?;
-        let mut view = pair_layer(&base.run, args.lra_table.as_deref(), pair)?;
+        let mut view = pair_layer(&base.run, args, pair)?;
         let level = base.run.level_index(args.level.as_deref())?;
-        let on = view.on_map(&base, level)?.expect("a pair is selected");
+        if let Some(text) = args.type_pair.as_deref() {
+            let options = view.drawn_options();
+            view.look.focus = view.type_pair(&base, &options, text)?;
+        }
+        view.on_map(&base, level)?;
+        let on = view.shown().expect("a pair is drawn");
+        print_type_links(&view, on);
+        if args.type_heatmap {
+            return write_type_heatmap(args, theme, on, t);
+        }
         let vp = still_viewport(args, &base)?;
         let (level, style, gene) = on.drawn(
             &base,
@@ -203,6 +223,60 @@ fn write_pair_still(args: &ViewArgs, theme: Theme, pair: &str) -> anyhow::Result
     Ok(())
 }
 
+/// The drawn pair's links by cell type, the largest shares first.
+fn print_type_links(view: &lra::LraView, on: &lra::OnMap) {
+    let Some(types) = &on.types else {
+        println!("{}", lra::NO_CELL_TYPES);
+        return;
+    };
+    let from = view.cell_types_from();
+    println!(
+        "links by cell type ({}; {} responders: exposed receptor+ receivers, ligand+ ones too):",
+        from.unwrap_or_default(),
+        types.responders
+    );
+    println!(
+        "  {:<40} {:>9} {:>9} {:>10}",
+        "sender → receiver", "links", "active", "share"
+    );
+    for c in types.cells.iter().take(TYPE_LINKS_PRINTED) {
+        let label = types.label(c);
+        println!(
+            "  {label:<40} {:>9} {:>9} {:>10.2}",
+            c.links, c.active, c.share
+        );
+    }
+    if let Some(focus) = view.look.focus_label() {
+        println!("links drawn: {focus}");
+    }
+}
+
+/// Type pairs a pair's still prints.
+const TYPE_LINKS_PRINTED: usize = 12;
+
+/// `--type-heatmap`: the drawn pair's links by cell type as a PNG and/or
+/// a PDF figure.
+fn write_type_heatmap(
+    args: &ViewArgs,
+    theme: Theme,
+    on: &lra::OnMap,
+    t: Instant,
+) -> anyhow::Result<()> {
+    let no_types = || anyhow::anyhow!("--type-heatmap: {}", lra::NO_CELL_TYPES);
+    if let Some(path) = args.png.as_deref() {
+        let frame = lra::type_heat::still(on, args.width.max(1), theme).ok_or_else(no_types)?;
+        writing(Path::new(path), |p| frame.write_png(p))?;
+    }
+    if let Some(path) = args.pdf.as_deref() {
+        let page = lra::type_heat::page(on, theme).ok_or_else(no_types)?;
+        let page = page.map_err(anyhow::Error::msg)?;
+        writing(Path::new(path), |p| Ok(pdf::write_chart(page, p)?))?;
+    }
+    print_written(args);
+    println!("in {:.2?}", t.elapsed());
+    Ok(())
+}
+
 /// The lra pair a still draws, to say the command that draws it again.
 pub(super) struct StillPair<'a> {
     pub name: String,
@@ -210,6 +284,10 @@ pub(super) struct StillPair<'a> {
     /// The table, when it is not the run's first.
     pub table: Option<&'a Path>,
     pub curve: bool,
+    /// `--lra-cell-types`, when given.
+    pub cell_types: Option<&'a str>,
+    /// The type pair its links are left to, `SENDER > RECEIVER`.
+    pub type_pair: Option<String>,
 }
 
 /// One view as `pinto view` draws it without a terminal, to say the
@@ -300,6 +378,12 @@ impl Still<'_> {
             }
             if p.curve {
                 flag("--curve", None);
+            }
+            if let Some(f) = p.cell_types {
+                flag("--lra-cell-types", Some(f.to_string()));
+            }
+            if let Some(t) = &p.type_pair {
+                flag("--type-pair", Some(t.clone()));
             }
             return args;
         }
