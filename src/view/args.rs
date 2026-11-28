@@ -382,6 +382,41 @@ pub struct ViewArgs {
     )]
     pub curve: bool,
 
+    #[arg(
+        long,
+        value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
+        help_heading = "Ligand-receptor pairs (pinto lra)",
+        help = "Cell types (cell, cell_type) for a pair's links by type [default: the table's]",
+        long_help = "A cell-type table (TSV, CSV or parquet: a `cell` and a `cell_type`\n\
+                     column) that a pair's links are grouped by, sender type to receiver\n\
+                     type, in place of the table's own: its --cell-types when that file\n\
+                     is still there, else the run's newest lupin round."
+    )]
+    pub lra_cell_types: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "SENDER>RECEIVER",
+        help_heading = "Ligand-receptor pairs (pinto lra)",
+        help = "With --pair: draw only the links from one cell type to another",
+        long_help = "With --pair and --edges: draw only the pair's links from the first\n\
+                     cell type to the second (\"B cell > T cell\"), of the table's cell\n\
+                     types or --lra-cell-types."
+    )]
+    pub type_pair: Option<String>,
+
+    #[arg(
+        long,
+        help_heading = "Ligand-receptor pairs (pinto lra)",
+        help = "With --pair: draw its links by cell type as a heatmap, not the map (--png/--pdf)",
+        long_help = "With --pair: draw the pair's links by cell type, not the map: a row\n\
+                     per receiver type, a column per sender type, shaded by the share of\n\
+                     the responders' exposure (exposed receptor+ receivers) the sender\n\
+                     type gives, relative to the largest. Prints the type pairs too."
+    )]
+    pub type_heatmap: bool,
+
     #[command(flatten)]
     pub session: legume_tui::cli::SessionArgs,
 }

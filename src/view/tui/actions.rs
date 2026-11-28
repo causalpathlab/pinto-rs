@@ -296,8 +296,8 @@ impl App<'_> {
             (None, None) => format!("map · {} · {}", level.comm.tag, style.layer),
         };
         let listed = self.remember(&pdf, &what, &thumb);
-        let bars = if self.curve_shows() {
-            self.export_curve(&format!("{stem}-curve"))?
+        let bars = if self.lra_chart_shows() {
+            self.export_lra_chart(&format!("{stem}-{}", self.lra_chart_suffix()))?
         } else if self.bars.height > 0 {
             self.export_structure(&format!("{stem}-structure"))?
         } else {

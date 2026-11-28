@@ -9,6 +9,7 @@ mod heatmap;
 mod helpers;
 mod index;
 pub(super) mod lra;
+mod lra_cell_types;
 mod lra_links;
 mod lupin;
 mod markers;

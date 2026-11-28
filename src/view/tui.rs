@@ -302,8 +302,8 @@ struct App<'a> {
     lra_on: bool,
     /// The list's cursor, a position among the pairs shown.
     lra_cursor: usize,
-    /// The selected pair's curve under the map (`c` in the layer).
-    lra_curve: bool,
+    /// What is under the map: the pair's curve or links by type (`c`).
+    lra_below: lra::Below,
     /// The gene search being typed (`/` in the layer).
     lra_search: Option<legume_tui::save::Field>,
     /// A `pinto lra` started from the layer.
@@ -407,7 +407,7 @@ impl<'a> App<'a> {
             lra: None,
             lra_on: false,
             lra_cursor: 0,
-            lra_curve: false,
+            lra_below: lra::Below::Nothing,
             lra_search: None,
             lra_job: None,
             pair_pending: false,
@@ -597,7 +597,7 @@ impl<'a> App<'a> {
         // own axes, takes those rows too.
         self.bars = Rect::default();
         self.below = Rect::default();
-        let curve = self.curve_shows();
+        let curve = self.lra_chart_shows();
         if (self.structure || curve)
             && self.view == plots::View::Map
             && !self.grid_shows()

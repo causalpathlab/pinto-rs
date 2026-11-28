@@ -273,6 +273,7 @@ pub(crate) fn lra_run(dir: &Path) -> (String, Contacts) {
             .map(|c| Some(((c % SIDE) as f32, (c / SIDE) as f32)))
             .collect(),
         cell_type: None,
+        cell_type_source: None,
         region: None,
         coord_pairs_row_of_pair: None,
     };

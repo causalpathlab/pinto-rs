@@ -9,7 +9,8 @@
 
 use super::super::gene::GeneMap;
 use super::super::lra::{
-    change, lra_command, lra_table, probability_text, Filter, LraView, PairShow, TableRef,
+    change, lra_command, lra_table, probability_text, type_heat, Filter, LraView, PairShow,
+    TableRef, TypeFocus,
 };
 use super::super::render::Style;
 use super::super::{curve, Level, StillPair};
@@ -29,10 +30,23 @@ pub const LRA_HELP: &[&str] = &[
     " ↑ ↓ pair  o sort  / genes",
     " space/m mark  M mark all shown",
     " ctrl+r run lra --only: marked or this pair",
-    " T next table  e exposure  c curve  X stop",
+    " T next table  e exposure  X stop",
+    " c curve, types, none under the map",
+    " y links of the next type pair",
     " s save  z/Z zoom  ? all keys",
     " I or Esc leave the pairs",
 ];
+
+/// What the layer draws under the map (`c` in the layer).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Below {
+    #[default]
+    Nothing,
+    /// The selected pair's threshold-response curve.
+    Curve,
+    /// Its links by cell type, as a heatmap.
+    Types,
+}
 
 /// A `pinto lra` the layer started, as `pinto run` runs a fit: its
 /// script beside the run, its log followed.
@@ -82,7 +96,7 @@ impl App<'_> {
             if !tables.is_empty() {
                 self.busy(terminal, "reading the lra table ...".into())?;
             }
-            match LraView::new(tables) {
+            match self.new_lra_view(tables) {
                 Ok(v) => self.lra = v,
                 Err(e) => {
                     self.fail(format!("{e:#}"));
@@ -110,7 +124,7 @@ impl App<'_> {
         self.lra = None;
         self.lra_on = false;
         self.lra_cursor = 0;
-        self.lra_curve = false;
+        self.lra_below = Below::Nothing;
         self.lra_search = None;
         self.pair_pending = false;
     }
@@ -191,17 +205,69 @@ impl App<'_> {
                 self.need_map = true;
             }
             KeyCode::Char('c') => {
-                self.lra_curve = !self.lra_curve;
-                self.status = if self.lra_curve {
-                    "threshold-response curve under the map: c hides it".into()
-                } else {
-                    String::new()
+                self.lra_below = match self.lra_below {
+                    Below::Nothing => Below::Curve,
+                    Below::Curve => Below::Types,
+                    Below::Types => Below::Nothing,
+                };
+                self.status = match self.lra_below {
+                    Below::Curve => "threshold-response curve under the map: c for types".into(),
+                    Below::Types if self.lra_chart_shows() => {
+                        "links by cell type under the map, receiver (rows) by sender: c hides it"
+                            .into()
+                    }
+                    Below::Types => format!("{}; c hides it", super::super::lra::NO_CELL_TYPES),
+                    Below::Nothing => String::new(),
                 };
                 self.need_map = true;
             }
+            KeyCode::Char('y') => self.next_type_pair(),
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// The layer on `tables`, its cell types `--lra-cell-types`' when given.
+    fn new_lra_view(&self, tables: Vec<TableRef>) -> anyhow::Result<Option<LraView>> {
+        let Some(mut v) = LraView::new(tables)? else {
+            return Ok(None);
+        };
+        v.set_cell_types(self.args.lra_cell_types.clone())?;
+        Ok(Some(v))
+    }
+
+    /// `y`: the pair's links left to the next type pair carrying any of
+    /// its exposure, largest share first; after the last, every link again.
+    fn next_type_pair(&mut self) {
+        let v = self.lra.as_mut().expect("checked");
+        let types = match v.shown_types() {
+            Ok((_, types)) => types,
+            Err(e) => {
+                self.status = e.to_string();
+                return;
+            }
+        };
+        let order: Vec<TypeFocus> = types
+            .cells
+            .iter()
+            .filter(|c| c.active > 0)
+            .map(|c| types.names_of(c))
+            .collect();
+        let at = v
+            .look
+            .focus
+            .as_ref()
+            .and_then(|f| order.iter().position(|p| p == f));
+        v.look.focus = match at {
+            None => order.first().cloned(),
+            Some(i) => order.get(i + 1).cloned(),
+        };
+        self.status = match v.look.focus_label() {
+            Some(l) => format!("links drawn: {l} (y: next)"),
+            None => "links drawn: every type pair".into(),
+        };
+        self.pair_pending = true;
+        self.need_map = true;
     }
 
     /// Change the list's filter with `change`, the cursor kept; the
@@ -369,41 +435,93 @@ impl App<'_> {
         )
     }
 
-    /// Whether the curve is under the map.
-    pub(super) fn curve_shows(&self) -> bool {
-        self.lra_on && self.lra_curve && self.lra.as_ref().is_some_and(|v| v.selected.is_some())
+    /// Whether a chart of the selected pair is under the map: its curve, or
+    /// its links by cell type.
+    pub(super) fn lra_chart_shows(&self) -> bool {
+        let Some(v) = self
+            .lra
+            .as_ref()
+            .filter(|v| self.lra_on && v.selected.is_some())
+        else {
+            return false;
+        };
+        match self.lra_below {
+            Below::Nothing => false,
+            Below::Curve => true,
+            // only once the pair is drawn with cell types to show
+            Below::Types => v.shown_types().is_ok(),
+        }
     }
 
-    /// `map` with the selected pair's curve under it, as one frame.
-    pub(super) fn with_curve(&mut self, map: super::Frame) -> super::Frame {
-        let Some(c) = self.lra.as_ref().and_then(LraView::curve) else {
+    /// The file name's ending for the chart under the map.
+    pub(super) fn lra_chart_suffix(&self) -> &'static str {
+        match self.lra_below {
+            Below::Types => "types",
+            _ => "curve",
+        }
+    }
+
+    /// `map` with the selected pair's chart under it, as one frame.
+    pub(super) fn with_lra_chart(&mut self, map: super::Frame) -> super::Frame {
+        let room = (map.w, self.room_below(&map));
+        let (theme, px) = (self.base.theme(), self.px_per_cell.1);
+        let Some(v) = self.lra.as_ref() else {
             return map;
         };
-        let room = (map.w, self.room_below(&map));
-        let below = curve::render(&c, room, self.base.theme(), self.px_per_cell.1);
-        super::plots::stack_below(map, &below)
+        let below = match self.lra_below {
+            Below::Curve => v.curve().map(|c| curve::render(&c, room, theme, px)),
+            Below::Types => v
+                .shown()
+                .and_then(|on| type_heat::render(on, room, px, theme)),
+            Below::Nothing => None,
+        };
+        match below {
+            Some(below) => super::plots::stack_below(map, &below),
+            None => map,
+        }
     }
 
-    /// The curve, saved beside the map's export (`s`): a PNG of
-    /// [`curve::STILL_WIDTH`] times the export scale, whatever room the
+    /// The chart under the map, saved beside the map's export (`s`): a PNG
+    /// of [`curve::STILL_WIDTH`] times the export scale, whatever room the
     /// screen gives it, and a PDF figure.
-    pub(super) fn export_curve(&mut self, stem: &str) -> anyhow::Result<String> {
-        let Some(c) = self.lra.as_ref().and_then(LraView::curve) else {
-            return Ok(String::new());
-        };
+    pub(super) fn export_lra_chart(&mut self, stem: &str) -> anyhow::Result<String> {
         let w = curve::STILL_WIDTH * self.args.export_scale.max(1);
         let theme = self.base.theme();
-        let frame = curve::still(&c, (w, curve::still_height(w)), theme);
+        let Some(v) = self.lra.as_ref() else {
+            return Ok(String::new());
+        };
+        let chart = match self.lra_below {
+            Below::Curve => v.curve().map(|c| {
+                let frame = curve::still(&c, (w, curve::still_height(w)), theme);
+                (
+                    frame,
+                    curve::page(&c, theme),
+                    format!("curve · {}", c.title),
+                )
+            }),
+            Below::Types => v.shown().and_then(|on| {
+                let label = format!("links by cell type · {}:{}", on.ligand, on.receptor);
+                Some((
+                    type_heat::still(on, w, theme)?,
+                    type_heat::page(on, theme)?,
+                    label,
+                ))
+            }),
+            Below::Nothing => None,
+        };
+        let Some((frame, page, label)) = chart else {
+            return Ok(String::new());
+        };
         let png = format!("{stem}.png");
         frame.write_png(Path::new(&png))?;
-        let pdf = match curve::page(&c, theme) {
+        let pdf = match page {
             Ok(page) => {
                 super::super::pdf::write_chart(page, Path::new(&format!("{stem}.pdf")))?;
                 " .pdf"
             }
             Err(_) => "",
         };
-        let listed = self.remember(&png, &format!("curve · {}", c.title), &frame);
+        let listed = self.remember(&png, &label, &frame);
         Ok(format!(", {png}{pdf}{listed}"))
     }
 
@@ -614,6 +732,17 @@ impl App<'_> {
                 }
                 (None, _) => {}
             }
+            if let Ok((_, types)) = v.shown_types() {
+                tail.push((Line::styled(" links by type: share  y: next", dim), None));
+                let focus = v.look.focus.as_ref();
+                for c in types.cells.iter().take(TYPE_LINES) {
+                    let at = focus == Some(&types.names_of(c));
+                    let label_w = width.saturating_sub(9).max(8);
+                    let label = style::middle(&types.label(c), label_w);
+                    let text = format!(" {label:<label_w$} {:>7.1}", c.share);
+                    tail.push((Line::styled(text, if at { bold } else { plain }), None));
+                }
+            }
         }
         tail.extend(job);
 
@@ -781,7 +910,7 @@ impl App<'_> {
         let label = style::middle(&r.label(), LABEL_WIDTH);
         let loaded = match self.lra.as_mut() {
             Some(v) => v.load_path(r),
-            None => LraView::new(vec![r]).map(|v| self.lra = v),
+            None => self.new_lra_view(vec![r]).map(|v| self.lra = v),
         };
         match loaded {
             Ok(()) => {
@@ -795,3 +924,6 @@ impl App<'_> {
         self.need_map = true;
     }
 }
+
+/// Type pairs the panel lists under the pair, the largest share first.
+const TYPE_LINES: usize = 5;

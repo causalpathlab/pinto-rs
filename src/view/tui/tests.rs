@@ -118,12 +118,24 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
     assert!(app.drawn_gene().is_some());
     assert!(text(&app).join("\n").contains("L1 contact exposure"));
     app.lra_key(key(KeyCode::Char('c')), None).unwrap();
-    assert!(app.curve_shows());
+    assert!(app.lra_chart_shows());
     let frame = base.render(level_of(&app), &app.drawn().1, app.drawn_gene(), &vp);
     let h = frame.h;
     app.canvas = Rect::new(0, 0, 80, 64);
-    let tall = app.with_curve(frame);
+    let tall = app.with_lra_chart(frame);
     assert!(tall.h > h && tall.rgba.len() == tall.w * tall.h * 4);
+    // c again: the links by cell type, none on a run without types, so no
+    // band and the map alone; y says why it leaves the links; c: nothing
+    app.lra_key(key(KeyCode::Char('c')), None).unwrap();
+    assert!(!app.lra_chart_shows() && app.status.contains("no cell types"));
+    let frame = base.render(level_of(&app), &app.drawn().1, app.drawn_gene(), &vp);
+    assert_eq!(app.with_lra_chart(frame).h, h);
+    app.lra_key(key(KeyCode::Char('y')), None).unwrap();
+    assert!(app.status.contains("no cell types"), "{}", app.status);
+    assert!(app.lra.as_ref().unwrap().look.focus.is_none());
+    app.lra_key(key(KeyCode::Char('c')), None).unwrap();
+    assert!(!app.lra_chart_shows());
+    app.lra_key(key(KeyCode::Char('c')), None).unwrap();
 
     // / genes, typed and kept.
     app.lra_key(key(KeyCode::Char('/')), None).unwrap();
@@ -154,7 +166,7 @@ fn the_lra_layer_lists_pairs_and_draws_the_one_picked() {
 
     // I leaves the layer: the groups are drawn again.
     app.lra_key(key(KeyCode::Char('I')), None).unwrap();
-    assert!(!app.lra_on && app.lra_drawn().is_none() && !app.curve_shows());
+    assert!(!app.lra_on && app.lra_drawn().is_none() && !app.lra_chart_shows());
 }
 
 /// The layer's keys at the edges: Ctrl and Alt chords are the viewer's
@@ -192,7 +204,7 @@ fn the_lra_layers_keys_mark_in_turn_and_leave_chords_alone() {
     }
     let alt = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT);
     assert!(!app.lra_key(alt, None).unwrap());
-    assert!(!app.lra_curve && app.lra_job.is_none());
+    assert!(app.lra_below == super::lra::Below::Nothing && app.lra_job.is_none());
 
     // Ctrl+R runs lra, the suite's run key; with no pair chosen it asks for
     // one and starts nothing. `L` is the viewer's again: the level.
@@ -247,10 +259,10 @@ fn the_lra_layers_keys_mark_in_turn_and_leave_chords_alone() {
 
     // The curve's export, with no room under a 12-row map.
     app.lra_key(key(KeyCode::Char('c')), None).unwrap();
-    assert!(app.curve_shows() && app.bars.height == 0);
+    assert!(app.lra_chart_shows() && app.bars.height == 0);
     app.lra.as_mut().unwrap().load(0).unwrap();
     let stem = dir.path().join("fig-curve");
-    app.export_curve(&stem.to_string_lossy()).unwrap();
+    app.export_lra_chart(&stem.to_string_lossy()).unwrap();
     // The IHDR's width and height, big-endian after the signature.
     let png = std::fs::read(format!("{}.png", stem.display())).unwrap();
     let be = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());

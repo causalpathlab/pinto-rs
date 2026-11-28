@@ -94,6 +94,8 @@ pub mod frame;
 mod genes;
 pub mod inference;
 mod jackknife;
+#[cfg(feature = "view")]
+pub mod link_cell_types;
 pub mod link_community_scope;
 mod memory;
 mod null_draws;

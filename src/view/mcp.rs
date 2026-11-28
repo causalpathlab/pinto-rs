@@ -160,6 +160,9 @@ pub(super) struct MapArgs {
     /// Also the selected lra pair's curve, as a second image; this call
     /// only.
     curve: bool,
+    /// Also the drawn lra pair's links by cell type as a heatmap; this call
+    /// only.
+    type_heatmap: bool,
 }
 
 #[derive(Deserialize)]
@@ -313,17 +316,24 @@ impl Open {
         // The curve is checked before anything changes: it goes with the
         // pair's map, never with groups drawn instead.
         anyhow::ensure!(
-            !(a.curve && regroup),
-            "curve: the pair's curve goes with its map; ask for groups, a layer or a gene without it"
+            !((a.curve || a.type_heatmap) && regroup),
+            "curve, type_heatmap: they go with the pair's map; ask for groups, a layer or a gene without them"
         );
         anyhow::ensure!(
-            !a.curve
+            !(a.curve || a.type_heatmap)
                 || self
                     .lra
                     .as_ref()
                     .is_some_and(|v| v.selected_row().is_some()),
-            "curve: no lra pair selected; view_lra pair first"
+            "curve, type_heatmap: no lra pair selected; view_lra pair first"
         );
+        if a.type_heatmap {
+            // checked here, so a call that cannot draw it changes nothing
+            let v = self.lra.as_ref().filter(|_| self.pair_drawn);
+            let v = v.ok_or_else(|| anyhow::anyhow!("type_heatmap: view_lra pair first"))?;
+            v.shown_types()
+                .map_err(|e| anyhow::anyhow!("type_heatmap: {e}"))?;
+        }
         let next = self.next(&a)?;
         self.commit(next);
         if regroup {
@@ -357,6 +367,14 @@ impl Open {
             let plot =
                 super::curve::still(&c, (w, super::curve::still_height(w)), self.base.theme());
             out.insert(1, Content::Png(plot.small_png()?));
+        }
+        let shown = self.lra.as_ref().and_then(LraView::shown);
+        let heat = shown.filter(|_| a.type_heatmap);
+        if let Some(heat) =
+            heat.and_then(|on| lra_layer::type_heat::still(on, vp.w, self.base.theme()))
+        {
+            let at = out.len() - 1;
+            out.insert(at, Content::Png(heat.small_png()?));
         }
         Ok(out)
     }

@@ -10,28 +10,26 @@
 //! options), the first time a pair is drawn; each pair after that costs
 //! its ligand's and receptor's rows, and the last few drawn are kept.
 
-use super::args::EdgesShown;
 use super::color::{Rgb, Theme};
 use super::curve::Curve;
-use super::data::{Communities, NO_CLUSTER};
-use super::gene::{GeneMap, Source};
-use super::index::{Links, PairLinks};
+
 use super::lupin::same_file;
-use super::render::{Layer, Style};
+use super::Base;
 use super::StillPair;
-use super::{Base, FigureLook, Level};
 use crate::lr_activity::args::LraMethod;
-use crate::lr_activity::ligand_effect::frame::{Class, PairMap, RunFrame};
+use crate::lr_activity::ligand_effect::link_cell_types::{type_pair_named, CellTypeLinks};
 use crate::lr_activity::ligand_effect::only;
 use crate::lr_activity::ligand_effect::output::{
     curve_beside, percent_text, read_curves, read_pair_rows, CurveRow, Curves, PairRow, Q_SCOPE_ALL,
 };
 use crate::util::metadata::{LraOptions, LraSubset};
-use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
-/// Percentile the exposure ramp tops out at.
-const EXPOSURE_CLIP: f32 = 99.;
+mod on_map;
+pub mod type_heat;
+#[cfg(test)]
+pub(in crate::view) use on_map::pair_links;
+pub use on_map::{OnMap, Receivers, TypeCodes, NO_TYPE};
 
 /// Pairs drawn kept, the newest; one drawn again after that is redrawn.
 const DRAWN_KEPT: usize = 3;
@@ -300,7 +298,7 @@ impl PairShow {
     }
 }
 
-/// The classes' colours in `theme`, in [`Class::ALL`]'s order; the
+/// The classes' colours in `theme`, in [`Class::ALL`](crate::lr_activity::ligand_effect::frame::Class::ALL)'s order; the
 /// unexposed receptor-negative receivers are the tissue's dimmed grey.
 pub fn class_palette(theme: Theme) -> Vec<Rgb> {
     let own: [Rgb; 4] = match theme {
@@ -315,246 +313,6 @@ pub fn class_palette(theme: Theme) -> Vec<Rgb> {
     let mut p = own.to_vec();
     p.push(theme.dimmed());
     p
-}
-
-/// A run's receivers as lra saw them, matched to the map's cells.
-pub struct Receivers {
-    pub frame: RunFrame,
-    /// Map cell of each receiver row.
-    cell_of_row: Vec<Option<u32>>,
-    /// Receiver row of each map cell; [`NO_ROW`] for a cell without.
-    row_of_cell: Vec<u32>,
-    /// The options they were read with.
-    options: LraOptions,
-}
-
-/// In [`Receivers::row_of_cell`], a map cell that is no receiver.
-const NO_ROW: u32 = u32::MAX;
-
-impl Receivers {
-    /// `frame` on `base`'s cells, read with `options`.
-    pub fn new(frame: RunFrame, base: &Base, options: &LraOptions) -> Self {
-        let geom = &base.geom;
-        let cell_of_row: Vec<Option<u32>> = frame
-            .cell
-            .iter()
-            .map(|&c| geom.index.get(&frame.column_names[c]).map(|&i| i as u32))
-            .collect();
-        let mut row_of_cell = vec![NO_ROW; geom.n()];
-        for (r, cell) in cell_of_row.iter().enumerate() {
-            if let Some(i) = *cell {
-                row_of_cell[i as usize] = r as u32;
-            }
-        }
-        Receivers {
-            frame,
-            cell_of_row,
-            row_of_cell,
-            options: options.clone(),
-        }
-    }
-
-    /// Read the receivers of the run `base` shows, made with `options`.
-    pub fn open(base: &Base, options: &LraOptions) -> anyhow::Result<Self> {
-        Ok(Self::new(
-            RunFrame::open(&base.run.manifest, options)?,
-            base,
-            options,
-        ))
-    }
-
-    /// The receiver row of map cell `cell`, if it is one.
-    fn row(&self, cell: u32) -> Option<usize> {
-        let r = *self.row_of_cell.get(cell as usize)?;
-        (r != NO_ROW).then_some(r as usize)
-    }
-}
-
-/// One pair drawn on the map.
-pub struct OnMap {
-    pub ligand: Box<str>,
-    pub receptor: Box<str>,
-    pub map: PairMap,
-    /// The classes, as a grouping of the map's cells, with the links of
-    /// `level` carrying the pair.
-    pub classes: Level,
-    /// Each map cell's exposure, and whether it is a receiver.
-    values: Vec<f32>,
-    measured: Vec<bool>,
-    /// The exposure as a feature's level, made the first time it is drawn.
-    exposure: OnceCell<GeneMap>,
-    /// The level on screen, whose links `classes` carries.
-    level: usize,
-}
-
-impl OnMap {
-    /// `row`'s pair on `rx`, drawn on `base`'s cells; `level` is the level
-    /// on screen, which the export's command names.
-    pub fn new(base: &Base, rx: &Receivers, row: &PairRow, level: usize) -> anyhow::Result<Self> {
-        let threshold = row.threshold.is_finite().then_some(row.threshold);
-        let map = rx.frame.pair(&row.ligand, &row.receptor, threshold)?;
-        let n = base.geom.n();
-        let mut values = vec![0f32; n];
-        let mut measured = vec![false; n];
-        for (r, i) in in_scope_cells(rx, &map) {
-            values[i] = map.exposure[r] as f32;
-            measured[i] = true;
-        }
-        let classes = classes_on(base, rx, &map, &row.name(), level)?;
-        Ok(OnMap {
-            ligand: row.ligand.clone(),
-            receptor: row.receptor.clone(),
-            map,
-            classes,
-            values,
-            measured,
-            exposure: OnceCell::new(),
-            level,
-        })
-    }
-
-    /// The same pair on level `level`, its links that level's: the pair
-    /// itself is not read again.
-    fn relevel(&mut self, base: &Base, rx: &Receivers, level: usize) -> anyhow::Result<()> {
-        let mut classes = classes_on(base, rx, &self.map, &self.classes.comm.tag, level)?;
-        classes.palette = self.classes.palette.clone();
-        self.classes = classes;
-        self.level = level;
-        Ok(())
-    }
-
-    /// The exposure, as a feature's level on `base`'s grid.
-    pub fn exposure(&self, base: &Base) -> &GeneMap {
-        self.exposure.get_or_init(|| {
-            GeneMap::new(
-                &self.ligand,
-                Source::Observed,
-                &self.values,
-                Some(&self.measured),
-                EXPOSURE_CLIP,
-                &base.grid,
-            )
-            .labelled(&format!("{} contact exposure", self.ligand))
-        })
-    }
-
-    /// The level, style and feature map that draw it on `base` as `show`
-    /// asks, its links with `edges` (where the level has them).
-    pub fn drawn(
-        &self,
-        base: &Base,
-        show: PairShow,
-        edges: bool,
-        point: f32,
-        look: FigureLook,
-    ) -> (&Level, Style<'static>, Option<&GeneMap>) {
-        let style = Style {
-            layer: match show {
-                PairShow::Classes => Layer::Argmax,
-                PairShow::Exposure => Layer::Gene,
-            },
-            edges: (edges && self.classes.edges.is_some()).then_some(EdgesShown::All),
-            focus: None,
-            theme: base.theme(),
-            point,
-            look,
-        };
-        let gene = (show == PairShow::Exposure).then(|| self.exposure(base));
-        (&self.classes, style, gene)
-    }
-
-    /// Recolour for `theme`.
-    pub fn retheme(&mut self, theme: Theme) {
-        self.classes.palette = class_palette(theme);
-    }
-
-    /// The links in scope (contacts the exposure is summed over) and those
-    /// carrying the ligand to an exposed receptor-positive receiver; `None`
-    /// without the level's links.
-    pub fn link_counts(&self) -> Option<(usize, usize)> {
-        Some(self.classes.edges.as_ref()?.pair.as_ref()?.counts)
-    }
-
-    /// Each class with its colour and receivers, as the legend lists them.
-    pub fn legend(&self) -> Vec<(&'static str, Rgb, usize)> {
-        let counts = self.map.counts();
-        Class::ALL
-            .iter()
-            .enumerate()
-            .map(|(k, c)| (c.name(), self.classes.palette[k], counts[k]))
-            .collect()
-    }
-}
-
-/// The pair `map` on `links`, each link's ends matched to `rx`'s rows: in
-/// scope when they are contacts its exposure is summed over, carrying the
-/// larger share of the two directions ([`PairMap::share`]).
-pub(super) fn pair_links(links: &Links, rx: &Receivers, map: &PairMap) -> PairLinks {
-    let edges = &links.edges;
-    let n = edges.a.len();
-    let mut out = PairLinks {
-        in_scope: vec![false; n],
-        share: vec![0.; n],
-        a_sends: vec![true; n],
-        counts: (0, 0),
-    };
-    for e in 0..n {
-        let (Some(a), Some(b)) = (rx.row(edges.a[e]), rx.row(edges.b[e])) else {
-            continue;
-        };
-        if !rx.frame.joined(a, b) {
-            continue;
-        }
-        out.in_scope[e] = true;
-        let (a_to_b, b_to_a) = (map.share(a, b), map.share(b, a));
-        out.share[e] = a_to_b.max(b_to_a) as f32;
-        out.a_sends[e] = a_to_b >= b_to_a;
-        out.counts.0 += 1;
-        out.counts.1 += (out.share[e] > 0.) as usize;
-    }
-    out
-}
-
-/// Each receiver row of `rx` in `map`'s scope, with its map cell.
-fn in_scope_cells<'a>(
-    rx: &'a Receivers,
-    map: &'a PairMap,
-) -> impl Iterator<Item = (usize, usize)> + 'a {
-    rx.cell_of_row
-        .iter()
-        .enumerate()
-        .filter(|&(r, _)| map.in_scope(r))
-        .filter_map(|(r, cell)| cell.map(|i| (r, i as usize)))
-}
-
-/// `map`'s classes as a grouping of `base`'s cells named `tag`, made from
-/// level `level`, with that level's links carrying the pair; a level without
-/// a link table draws its cells alone. A row out of the table's scope is
-/// drawn as no receiver.
-fn classes_on(
-    base: &Base,
-    rx: &Receivers,
-    map: &PairMap,
-    tag: &str,
-    level: usize,
-) -> anyhow::Result<Level> {
-    let mut group = vec![NO_CLUSTER; base.geom.n()];
-    for (r, i) in in_scope_cells(rx, map) {
-        group[i] = map.class(r) as u16;
-    }
-    let names: Vec<Box<str>> = Class::ALL.iter().map(|c| c.name().into()).collect();
-    let comm = Communities::from_groups(tag, group, names);
-    let mut classes = base.grouping(level, comm, None);
-    classes.palette = class_palette(base.theme());
-    if base.run.levels[level].link_community.is_some() {
-        let links = base.links(level)?;
-        let pair = pair_links(&links, rx, map);
-        classes.edges = Some(Links {
-            pair: Some(pair.into()),
-            ..links
-        });
-    }
-    Ok(classes)
 }
 
 // * The layer
@@ -601,6 +359,8 @@ pub struct LraView {
     pub receivers: Option<Receivers>,
     /// The last pairs drawn, the newest last.
     drawn: Vec<(DrawnKey, OnMap)>,
+    /// How the pairs' links are read by cell type.
+    pub look: TypeLook,
 }
 
 impl LraView {
@@ -620,6 +380,7 @@ impl LraView {
             marked: Default::default(),
             receivers: None,
             drawn: Vec::new(),
+            look: TypeLook::default(),
         };
         let first = v.stage(Which::At(0))?;
         v.commit(first);
@@ -791,12 +552,79 @@ impl LraView {
         Ok(())
     }
 
-    /// The options of the table shown, which its receivers were made with.
+    /// The options of the table shown: what `pinto lra --only` runs with.
     pub fn options(&self) -> LraOptions {
         self.tables
             .get(self.at)
             .map(|t| t.options.clone())
             .unwrap_or_default()
+    }
+
+    /// The options the shown table's receivers are read with here
+    /// ([`TypeLook::options_of`]).
+    pub fn drawn_options(&self) -> LraOptions {
+        self.look.options_of(&self.options())
+    }
+
+    /// Read the cell types from `file` in place of the tables' own, or
+    /// theirs again with `None` ([`TypeLook::with_cell_types`]).
+    pub fn set_cell_types(&mut self, file: Option<String>) -> anyhow::Result<()> {
+        self.look = self.look.clone().with_cell_types(file)?;
+        Ok(())
+    }
+
+    /// The type pair `text` names (`"SENDER > RECEIVER"`) among the cell
+    /// types of the receivers read with `options` (as read here), read
+    /// first when they are not; `None` for `""`.
+    pub fn type_pair(
+        &mut self,
+        base: &Base,
+        options: &LraOptions,
+        text: &str,
+    ) -> anyhow::Result<Option<TypeFocus>> {
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        if self.needs_receivers_for(options) {
+            self.receivers = Some(Receivers::open(base, options)?);
+        }
+        let rx = self.receivers.as_ref().expect("read above");
+        let names = rx
+            .frame
+            .cell_type_names()
+            .ok_or_else(|| anyhow::anyhow!("type pair {text}: {NO_CELL_TYPES}"))?;
+        let (s, r) = type_pair_named(names, text).ok_or_else(|| {
+            anyhow::anyhow!(
+                "type pair {text}: give SENDER > RECEIVER, each one of: {}",
+                names.join(", ")
+            )
+        })?;
+        Ok(Some((names[s as usize].clone(), names[r as usize].clone())))
+    }
+
+    /// The selected pair as drawn, with its links by cell type; why not
+    /// when it has none.
+    pub fn shown_types(&self) -> anyhow::Result<(&OnMap, &CellTypeLinks)> {
+        let on = self
+            .shown()
+            .ok_or_else(|| anyhow::anyhow!("no lra pair on the map"))?;
+        let types = on
+            .types
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("{NO_CELL_TYPES}"))?;
+        Ok((on, types))
+    }
+
+    /// Where the drawn pair's cell types come from, as lra's log names it;
+    /// `None` without them.
+    pub fn cell_types_from(&self) -> Option<String> {
+        self.shown()?.types.as_ref()?;
+        let rx = self.receivers.as_ref()?;
+        let from = rx.frame.cell_types_from()?;
+        Some(match self.look.cell_types {
+            Some(_) => format!("{from}, in place of the table's"),
+            None => from.to_string(),
+        })
     }
 
     fn key(row: &PairRow, options: &LraOptions) -> DrawnKey {
@@ -811,10 +639,11 @@ impl LraView {
     /// Whether drawing the selected pair reads the receivers first: none
     /// read yet, or read for a table made with other options.
     pub fn needs_receivers(&self) -> bool {
-        self.needs_receivers_for(&self.options())
+        self.needs_receivers_for(&self.drawn_options())
     }
 
-    /// [`LraView::needs_receivers`] for a table made with `options`.
+    /// [`LraView::needs_receivers`] for receivers read with `options` (as
+    /// read here, [`TypeLook::options_of`]).
     pub fn needs_receivers_for(&self, options: &LraOptions) -> bool {
         self.receivers
             .as_ref()
@@ -828,37 +657,49 @@ impl LraView {
         let Some(row) = self.selected_row().cloned() else {
             return Ok(None);
         };
-        self.draw(base, &self.options(), &row, level)?;
+        let look = self.look.clone();
+        self.draw(base, &self.options(), &look, &row, level)?;
         Ok(self.drawn.last().map(|(_, on)| on))
     }
 
-    /// Draw `row`, of a table made with `options`, when it is not among
-    /// the last drawn, the receivers read first when they are not read for
-    /// `options`; it is the newest drawn after. Only what is read and drawn
-    /// changes: [`LraView::shown`] finds it once its table is shown.
+    /// Draw `row`, of a table made with `table`'s options, read as `look`
+    /// says, when it is not among the last drawn, the receivers read first
+    /// when they are not read for those options; it is the newest drawn
+    /// after. Only what is read and drawn changes: [`LraView::shown`] finds
+    /// it once its table is shown and `look` is the layer's.
     pub fn draw(
         &mut self,
         base: &Base,
-        options: &LraOptions,
+        table: &LraOptions,
+        look: &TypeLook,
         row: &PairRow,
         level: usize,
     ) -> anyhow::Result<()> {
-        let key = Self::key(row, options);
+        let options = look.options_of(table);
+        let key = Self::key(row, &options);
         let at = self.drawn.iter().position(|(k, _)| *k == key);
-        let fresh = at.is_none_or(|at| self.drawn[at].1.level != level);
-        if fresh && self.needs_receivers_for(options) {
-            self.receivers = Some(Receivers::open(base, options)?);
+        // the focus by its types' codes in the receivers each pair is read on
+        let links_of =
+            |names: Option<&[Box<str>]>| (level, focus_codes(look.focus.as_ref(), names));
+        let fresh = at.is_none_or(|at| {
+            let on = &self.drawn[at].1;
+            on.links_of != links_of(on.types.as_ref().map(|t| t.names.as_slice()))
+        });
+        if fresh && self.needs_receivers_for(&options) {
+            self.receivers = Some(Receivers::open(base, &options)?);
         }
         let rx = self.receivers.as_ref();
+        let links_of = links_of(rx.and_then(|rx| rx.frame.cell_type_names()));
         let on = match at {
-            // drawn on another level: that level's links, the pair kept
+            // drawn on another level, or left to another type pair: those
+            // links, the pair kept
             Some(at) if fresh => {
                 let rx = rx.expect("read above");
-                self.drawn[at].1.relevel(base, rx, level)?;
+                self.drawn[at].1.relink(base, rx, links_of)?;
                 self.drawn.remove(at).1
             }
             Some(at) => self.drawn.remove(at).1,
-            None => OnMap::new(base, rx.expect("read above"), row, level)?,
+            None => OnMap::new(base, rx.expect("read above"), row, links_of)?,
         };
         if self.drawn.len() >= DRAWN_KEPT {
             self.drawn.remove(0);
@@ -869,7 +710,7 @@ impl LraView {
 
     /// The selected pair as drawn already, without drawing it.
     pub fn shown(&self) -> Option<&OnMap> {
-        let key = Self::key(self.selected_row()?, &self.options());
+        let key = Self::key(self.selected_row()?, &self.drawn_options());
         self.drawn.iter().find(|(k, _)| *k == key).map(|(_, on)| on)
     }
 
@@ -891,6 +732,8 @@ impl LraView {
             show: self.show,
             table: at.filter(|&t| Some(t) != first),
             curve,
+            cell_types: self.look.cell_types.as_deref(),
+            type_pair: self.look.focus_label(),
         })
     }
 
@@ -956,4 +799,67 @@ pub fn lra_table(prefix: &str, only: &[String], options: LraOptions) -> TableRef
         subset,
         options,
     }
+}
+
+/// A sender type → receiver type by name, kept across tables whose cell
+/// types differ: each pair resolves it on its own ([`focus_codes`]).
+pub type TypeFocus = (Box<str>, Box<str>);
+
+/// Why a pair's links cannot be read by cell type.
+pub const NO_CELL_TYPES: &str = "no cell types: the run has no lupin round and the table no \
+     --cell-types; give a cell-type table (--lra-cell-types; over MCP, view_lra cell_types)";
+
+/// How the pairs' links are read by cell type: the cell types given to the
+/// viewer in place of the tables' own, and the type pair the links are
+/// left to.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TypeLook {
+    /// A `cell`, `cell_type` table.
+    pub cell_types: Option<String>,
+    pub focus: Option<TypeFocus>,
+}
+
+impl TypeLook {
+    /// A table's `options` as its receivers are read here: with the cell
+    /// types given to the viewer in place of the table's (runs keep the
+    /// table's own).
+    pub fn options_of(&self, table: &LraOptions) -> LraOptions {
+        let mut o = table.clone();
+        if let Some(f) = &self.cell_types {
+            o.cell_types = Some(f.clone());
+        }
+        o
+    }
+
+    /// This look with the cell types of `file` (checked to be there), or
+    /// the tables' own with `None`; another file lets the type pair go.
+    pub fn with_cell_types(mut self, file: Option<String>) -> anyhow::Result<Self> {
+        if let Some(f) = &file {
+            anyhow::ensure!(Path::new(f).is_file(), "cell types {f}: no such file");
+        }
+        if file != self.cell_types {
+            self.cell_types = file;
+            self.focus = None;
+        }
+        Ok(self)
+    }
+
+    /// The type pair the links are left to, `SENDER > RECEIVER`.
+    pub fn focus_label(&self) -> Option<String> {
+        let (s, r) = self.focus.as_ref()?;
+        Some(format!("{s} > {r}"))
+    }
+}
+
+/// `focus` by its types' codes in `names`; a type `names` lacks matches no
+/// cell, so no link is drawn. `None` without a focus or without types.
+fn focus_codes(focus: Option<&TypeFocus>, names: Option<&[Box<str>]>) -> Option<TypeCodes> {
+    let ((s, r), names) = (focus?, names?);
+    let code = |n: &str| {
+        names
+            .iter()
+            .position(|x| **x == *n)
+            .map_or(NO_TYPE, |p| p as u32)
+    };
+    Some((code(s), code(r)))
 }

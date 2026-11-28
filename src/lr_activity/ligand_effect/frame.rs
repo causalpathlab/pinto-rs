@@ -261,6 +261,13 @@ impl RunFrame {
             from: Some(manifest.to_string_lossy().into()),
             knn_spatial: 5,
             seed: options.seed,
+            // the cell types the table was made with, when their file is
+            // still there; else the run's newest lupin round, as lra reads it
+            cell_types: options
+                .cell_types
+                .as_deref()
+                .filter(|f| std::path::Path::new(f).is_file())
+                .map(Into::into),
             ..Default::default()
         }
         .resolve()?;
@@ -405,6 +412,23 @@ impl RunFrame {
             (&lig, &rec),
             threshold,
         ))
+    }
+
+    /// Each receiver row's cell type, a code into [`RunFrame::cell_type_names`],
+    /// as lra read them; `None` when the run has none.
+    pub fn cell_type_of_rows(&self) -> Option<Vec<u32>> {
+        let (code_of_column, _) = self.run.cell_type.as_ref()?;
+        Some(self.cell.iter().map(|&c| code_of_column[c]).collect())
+    }
+
+    /// The cell types by code, the last one `unassigned`.
+    pub fn cell_type_names(&self) -> Option<&[Box<str>]> {
+        Some(&self.run.cell_type.as_ref()?.1)
+    }
+
+    /// Where the cell types were read from, as lra's log names it.
+    pub fn cell_types_from(&self) -> Option<&str> {
+        self.run.cell_type_source.as_deref()
     }
 
     /// Per receiver row, the count of a complex's scarcest subunit;

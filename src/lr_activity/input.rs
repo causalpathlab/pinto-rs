@@ -137,6 +137,9 @@ pub struct Contacts {
     /// when it has one: a code per data column into the names (unlabelled
     /// cells get `unassigned`).
     pub cell_type: Option<Labels>,
+    /// Where `cell_type` was read from (`--cell-types FILE`, `lupin round
+    /// FILE`), as the log names it.
+    pub cell_type_source: Option<String>,
     /// Regions of `--region`, coded the same way.
     pub region: Option<Labels>,
     /// Each contact's row in the `--from` run's `coord_pairs` table, which is
@@ -173,8 +176,10 @@ pub fn load_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
         )
         .map_err(|e| e.context(format!("--cell-types {f}")))?;
         info!("Cell types from {f}: {} types", t.1.len());
-        warn!("{}", cell_type_caveat(&format!("--cell-types {f}")));
+        let source = format!("--cell-types {f}");
+        warn!("{}", cell_type_caveat(&source));
         c.cell_type = Some(t);
+        c.cell_type_source = Some(source);
     }
     if let Some(f) = &input.region {
         let r = read_labels(Path::new(&**f), &["region", "label"], &cell_to_col, n_cells)
@@ -248,6 +253,7 @@ fn read_contacts(input: &LraInput) -> anyhow::Result<Contacts> {
         cell_section: batches,
         coords,
         cell_type: None,
+        cell_type_source: None,
         region: None,
         coord_pairs_row_of_pair: None,
     })
@@ -279,7 +285,7 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         .recorded_output(run.meta.outputs.cells.as_deref(), "cells.parquet")?
         .ok_or_else(|| anyhow::anyhow!("{}: records no cells table", run.manifest.display()))?;
     let coords = read_coords(&cells, &cell_to_col, n_cells)?;
-    let cell_type = match newest_round(&run.manifest) {
+    let (cell_type, cell_type_source) = match newest_round(&run.manifest) {
         Some(round) => match round_cell_types(&round, &cell_to_col, n_cells) {
             Ok(t) => {
                 info!(
@@ -287,18 +293,16 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
                     round.display(),
                     t.1.len()
                 );
-                warn!(
-                    "{}",
-                    cell_type_caveat(&format!("lupin round {}", round.display()))
-                );
-                Some(t)
+                let source = format!("lupin round {}", round.display());
+                warn!("{}", cell_type_caveat(&source));
+                (Some(t), Some(source))
             }
             Err(e) => {
                 warn!("lupin round {}: no cell types read: {e}", round.display());
-                None
+                (None, None)
             }
         },
-        None => None,
+        None => (None, None),
     };
     Ok(Contacts {
         data,
@@ -307,6 +311,7 @@ fn contacts_from_run(input: &LraInput) -> anyhow::Result<Contacts> {
         cell_section,
         coords,
         cell_type,
+        cell_type_source,
         region: None,
         coord_pairs_row_of_pair: Some(coord_pairs_row_of_pair),
     })
