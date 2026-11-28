@@ -60,6 +60,7 @@ pub(super) fn specs() -> Vec<ToolSpec> {
                     "center": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "Move the window's centre to this world point"},
                     "zoom": {"type": "number", "exclusiveMinimum": 0, "description": "Magnify the window about its centre: 2 zooms in, 0.5 out"},
                     "width": {"type": "integer", "minimum": 1, "maximum": MAX_SIDE, "description": "Image width in pixels, this call only [default: 1024]"},
+                    "curve": {"type": "boolean", "description": "Also return the selected lra pair's threshold-response curve (view_lra pair) as a second image, as the terminal draws it under the map; this call only"},
                 },
                 "additionalProperties": false,
             }),

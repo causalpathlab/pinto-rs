@@ -10,10 +10,12 @@
 //! options), the first time a pair is drawn; each pair after that costs
 //! its ligand's and receptor's rows, and the last few drawn are kept.
 
+use super::args::EdgesShown;
 use super::color::{Rgb, Theme};
 use super::curve::Curve;
 use super::data::{Communities, NO_CLUSTER};
 use super::gene::{GeneMap, Source};
+use super::index::{Links, PairLinks};
 use super::lupin::same_file;
 use super::render::{Layer, Style};
 use super::StillPair;
@@ -320,22 +322,34 @@ pub struct Receivers {
     pub frame: RunFrame,
     /// Map cell of each receiver row.
     cell_of_row: Vec<Option<u32>>,
+    /// Receiver row of each map cell; [`NO_ROW`] for a cell without.
+    row_of_cell: Vec<u32>,
     /// The options they were read with.
     options: LraOptions,
 }
+
+/// In [`Receivers::row_of_cell`], a map cell that is no receiver.
+const NO_ROW: u32 = u32::MAX;
 
 impl Receivers {
     /// `frame` on `base`'s cells, read with `options`.
     pub fn new(frame: RunFrame, base: &Base, options: &LraOptions) -> Self {
         let geom = &base.geom;
-        let cell_of_row = frame
+        let cell_of_row: Vec<Option<u32>> = frame
             .cell
             .iter()
             .map(|&c| geom.index.get(&frame.column_names[c]).map(|&i| i as u32))
             .collect();
+        let mut row_of_cell = vec![NO_ROW; geom.n()];
+        for (r, cell) in cell_of_row.iter().enumerate() {
+            if let Some(i) = *cell {
+                row_of_cell[i as usize] = r as u32;
+            }
+        }
         Receivers {
             frame,
             cell_of_row,
+            row_of_cell,
             options: options.clone(),
         }
     }
@@ -348,6 +362,12 @@ impl Receivers {
             options,
         ))
     }
+
+    /// The receiver row of map cell `cell`, if it is one.
+    fn row(&self, cell: u32) -> Option<usize> {
+        let r = *self.row_of_cell.get(cell as usize)?;
+        (r != NO_ROW).then_some(r as usize)
+    }
 }
 
 /// One pair drawn on the map.
@@ -355,13 +375,16 @@ pub struct OnMap {
     pub ligand: Box<str>,
     pub receptor: Box<str>,
     pub map: PairMap,
-    /// The classes, as a grouping of the map's cells.
+    /// The classes, as a grouping of the map's cells, with the links of
+    /// `level` carrying the pair.
     pub classes: Level,
     /// Each map cell's exposure, and whether it is a receiver.
     values: Vec<f32>,
     measured: Vec<bool>,
     /// The exposure as a feature's level, made the first time it is drawn.
     exposure: OnceCell<GeneMap>,
+    /// The level on screen, whose links `classes` carries.
+    level: usize,
 }
 
 impl OnMap {
@@ -371,22 +394,13 @@ impl OnMap {
         let threshold = row.threshold.is_finite().then_some(row.threshold);
         let map = rx.frame.pair(&row.ligand, &row.receptor, threshold)?;
         let n = base.geom.n();
-        let mut group = vec![NO_CLUSTER; n];
         let mut values = vec![0f32; n];
         let mut measured = vec![false; n];
-        for (r, cell) in rx.cell_of_row.iter().enumerate() {
-            let Some(i) = cell.map(|i| i as usize) else {
-                continue;
-            };
-            group[i] = map.class(r) as u16;
+        for (r, i) in in_scope_cells(rx, &map) {
             values[i] = map.exposure[r] as f32;
             measured[i] = true;
         }
-        let names: Vec<Box<str>> = Class::ALL.iter().map(|c| c.name().into()).collect();
-        let tag = row.name();
-        let comm = Communities::from_groups(&tag, group, names);
-        let mut classes = base.grouping(level, comm, None);
-        classes.palette = class_palette(base.theme());
+        let classes = classes_on(base, rx, &map, &row.name(), level)?;
         Ok(OnMap {
             ligand: row.ligand.clone(),
             receptor: row.receptor.clone(),
@@ -395,7 +409,18 @@ impl OnMap {
             values,
             measured,
             exposure: OnceCell::new(),
+            level,
         })
+    }
+
+    /// The same pair on level `level`, its links that level's: the pair
+    /// itself is not read again.
+    fn relevel(&mut self, base: &Base, rx: &Receivers, level: usize) -> anyhow::Result<()> {
+        let mut classes = classes_on(base, rx, &self.map, &self.classes.comm.tag, level)?;
+        classes.palette = self.classes.palette.clone();
+        self.classes = classes;
+        self.level = level;
+        Ok(())
     }
 
     /// The exposure, as a feature's level on `base`'s grid.
@@ -414,11 +439,12 @@ impl OnMap {
     }
 
     /// The level, style and feature map that draw it on `base` as `show`
-    /// asks.
+    /// asks, its links with `edges` (where the level has them).
     pub fn drawn(
         &self,
         base: &Base,
         show: PairShow,
+        edges: bool,
         point: f32,
         look: FigureLook,
     ) -> (&Level, Style<'static>, Option<&GeneMap>) {
@@ -427,7 +453,7 @@ impl OnMap {
                 PairShow::Classes => Layer::Argmax,
                 PairShow::Exposure => Layer::Gene,
             },
-            edges: None,
+            edges: (edges && self.classes.edges.is_some()).then_some(EdgesShown::All),
             focus: None,
             theme: base.theme(),
             point,
@@ -442,6 +468,13 @@ impl OnMap {
         self.classes.palette = class_palette(theme);
     }
 
+    /// The links in scope (contacts the exposure is summed over) and those
+    /// carrying the ligand to an exposed receptor-positive receiver; `None`
+    /// without the level's links.
+    pub fn link_counts(&self) -> Option<(usize, usize)> {
+        Some(self.classes.edges.as_ref()?.pair.as_ref()?.counts)
+    }
+
     /// Each class with its colour and receivers, as the legend lists them.
     pub fn legend(&self) -> Vec<(&'static str, Rgb, usize)> {
         let counts = self.map.counts();
@@ -451,6 +484,77 @@ impl OnMap {
             .map(|(k, c)| (c.name(), self.classes.palette[k], counts[k]))
             .collect()
     }
+}
+
+/// The pair `map` on `links`, each link's ends matched to `rx`'s rows: in
+/// scope when they are contacts its exposure is summed over, carrying the
+/// larger share of the two directions ([`PairMap::share`]).
+pub(super) fn pair_links(links: &Links, rx: &Receivers, map: &PairMap) -> PairLinks {
+    let edges = &links.edges;
+    let n = edges.a.len();
+    let mut out = PairLinks {
+        in_scope: vec![false; n],
+        share: vec![0.; n],
+        a_sends: vec![true; n],
+        counts: (0, 0),
+    };
+    for e in 0..n {
+        let (Some(a), Some(b)) = (rx.row(edges.a[e]), rx.row(edges.b[e])) else {
+            continue;
+        };
+        if !rx.frame.joined(a, b) {
+            continue;
+        }
+        out.in_scope[e] = true;
+        let (a_to_b, b_to_a) = (map.share(a, b), map.share(b, a));
+        out.share[e] = a_to_b.max(b_to_a) as f32;
+        out.a_sends[e] = a_to_b >= b_to_a;
+        out.counts.0 += 1;
+        out.counts.1 += (out.share[e] > 0.) as usize;
+    }
+    out
+}
+
+/// Each receiver row of `rx` in `map`'s scope, with its map cell.
+fn in_scope_cells<'a>(
+    rx: &'a Receivers,
+    map: &'a PairMap,
+) -> impl Iterator<Item = (usize, usize)> + 'a {
+    rx.cell_of_row
+        .iter()
+        .enumerate()
+        .filter(|&(r, _)| map.in_scope(r))
+        .filter_map(|(r, cell)| cell.map(|i| (r, i as usize)))
+}
+
+/// `map`'s classes as a grouping of `base`'s cells named `tag`, made from
+/// level `level`, with that level's links carrying the pair; a level without
+/// a link table draws its cells alone. A row out of the table's scope is
+/// drawn as no receiver.
+fn classes_on(
+    base: &Base,
+    rx: &Receivers,
+    map: &PairMap,
+    tag: &str,
+    level: usize,
+) -> anyhow::Result<Level> {
+    let mut group = vec![NO_CLUSTER; base.geom.n()];
+    for (r, i) in in_scope_cells(rx, map) {
+        group[i] = map.class(r) as u16;
+    }
+    let names: Vec<Box<str>> = Class::ALL.iter().map(|c| c.name().into()).collect();
+    let comm = Communities::from_groups(tag, group, names);
+    let mut classes = base.grouping(level, comm, None);
+    classes.palette = class_palette(base.theme());
+    if base.run.levels[level].link_community.is_some() {
+        let links = base.links(level)?;
+        let pair = pair_links(&links, rx, map);
+        classes.edges = Some(Links {
+            pair: Some(pair.into()),
+            ..links
+        });
+    }
+    Ok(classes)
 }
 
 // * The layer
@@ -739,25 +843,22 @@ impl LraView {
         row: &PairRow,
         level: usize,
     ) -> anyhow::Result<()> {
-        // the map reads exposure over every contact; a --link-community
-        // table's exposure runs through its community's links alone
-        if let Some(link_community) = options.link_community {
-            anyhow::bail!(
-                "a --link-community table's pairs are not drawn yet (its exposure runs \
-                 through link community {link_community} alone); read its rows, or draw \
-                 the marginal table's"
-            );
-        }
         let key = Self::key(row, options);
-        let on = match self.drawn.iter().position(|(k, _)| *k == key) {
-            Some(at) => self.drawn.remove(at).1,
-            None => {
-                if self.needs_receivers_for(options) {
-                    self.receivers = Some(Receivers::open(base, options)?);
-                }
-                let rx = self.receivers.as_ref().expect("read above");
-                OnMap::new(base, rx, row, level)?
+        let at = self.drawn.iter().position(|(k, _)| *k == key);
+        let fresh = at.is_none_or(|at| self.drawn[at].1.level != level);
+        if fresh && self.needs_receivers_for(options) {
+            self.receivers = Some(Receivers::open(base, options)?);
+        }
+        let rx = self.receivers.as_ref();
+        let on = match at {
+            // drawn on another level: that level's links, the pair kept
+            Some(at) if fresh => {
+                let rx = rx.expect("read above");
+                self.drawn[at].1.relevel(base, rx, level)?;
+                self.drawn.remove(at).1
             }
+            Some(at) => self.drawn.remove(at).1,
+            None => OnMap::new(base, rx.expect("read above"), row, level)?,
         };
         if self.drawn.len() >= DRAWN_KEPT {
             self.drawn.remove(0);

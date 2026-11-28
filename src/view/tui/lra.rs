@@ -363,7 +363,10 @@ impl App<'_> {
     /// pair drawn.
     pub(super) fn lra_drawn(&self) -> Option<(&Level, Style<'static>, Option<&GeneMap>)> {
         let v = self.lra.as_ref().filter(|_| self.lra_on)?;
-        Some(v.shown()?.drawn(self.base, v.show, self.point, self.look))
+        Some(
+            v.shown()?
+                .drawn(self.base, v.show, self.edges, self.point, self.look),
+        )
     }
 
     /// Whether the curve is under the map.
@@ -390,7 +393,7 @@ impl App<'_> {
         };
         let w = curve::STILL_WIDTH * self.args.export_scale.max(1);
         let theme = self.base.theme();
-        let frame = curve::still(&c, (w, w * 3 / 5), theme);
+        let frame = curve::still(&c, (w, curve::still_height(w)), theme);
         let png = format!("{stem}.png");
         frame.write_png(Path::new(&png))?;
         let pdf = match curve::page(&c, theme) {

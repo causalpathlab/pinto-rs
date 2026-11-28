@@ -1102,7 +1102,18 @@ pinto view out --png pair.png --pair L1:R3  # an lra pair: senders, exposed
                                                 # and receptor+ receivers
 pinto view out --png pair.png --pair L1:R3 --pair-show exposure
 pinto view out --png curve.png --pdf curve.pdf --pair L1:R3 --curve
+pinto view out --png k3.png --pair L1:R3 --edges --bbox 8200,6800,8800,7250 \
+  --lra-table out.lra.link-community-3.parquet   # through community 3's links
 ```
+
+With edges on (`--edges`, or the edge key in the viewer), a pair's map
+zoomed in far enough shows its links too: those its exposure is summed over
+are faint, and a link that carries the ligand to an exposed receptor+
+receiver runs from the sender's colour to the receiver's, more opaque the
+larger its share of that receiver's exposure (a ligand+ cell is drawn as a
+sender, though it can receive as well). A
+`--link-community K` table sums exposure over community K's links only, so
+cells with no community-K link are drawn as no receiver.
 
 In the viewer, arrows or a drag pan, the wheel or `z`/`Z` zoom, `<`/`>`
 shrink or grow the cell discs (`--point-size` for images), `l`/`L` step

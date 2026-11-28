@@ -160,7 +160,7 @@ fn write_pair_still(args: &ViewArgs, theme: Theme, pair: &str) -> anyhow::Result
         let view = pair_layer(&run, args.lra_table.as_deref(), pair)?;
         let curve = view.curve().expect("a pair is selected");
         let w = args.width.max(1);
-        let h = args.height.unwrap_or(w * 3 / 5);
+        let h = args.height.unwrap_or(curve::still_height(w));
         if let Some(path) = args.png.as_deref() {
             writing(Path::new(path), |p| {
                 curve::still(&curve, (w, h), theme).write_png(p)
@@ -176,7 +176,13 @@ fn write_pair_still(args: &ViewArgs, theme: Theme, pair: &str) -> anyhow::Result
         let level = base.run.level_index(args.level.as_deref())?;
         let on = view.on_map(&base, level)?.expect("a pair is selected");
         let vp = still_viewport(args, &base)?;
-        let (level, style, gene) = on.drawn(&base, args.pair_show, args.point_size, args.look());
+        let (level, style, gene) = on.drawn(
+            &base,
+            args.pair_show,
+            args.edges,
+            args.point_size,
+            args.look(),
+        );
         write_outputs(
             &base,
             level,

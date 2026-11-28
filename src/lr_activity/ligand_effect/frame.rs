@@ -6,13 +6,16 @@
 use super::contacts::{competence, Contacts};
 use super::dose::contact_dose;
 use super::genes::GeneStore;
+use super::link_community_scope::{community_inputs, community_scope, CommunityScope};
 use super::options::{self, EffectOpts};
 use super::pairs::{reference_pairs, scarcest_subunit, signalling_genes, subunit_genes};
 use super::receivers::{receiver_contacts, size_factors};
 use super::tissue::identity_bins;
 use super::{dose, PairChoices, INTERNALS};
 use crate::lr_activity::args::{LraInputArgs, ReferenceSpecies};
-use crate::lr_activity::input::{load_contacts, Contacts as RunContacts};
+use crate::lr_activity::input::{
+    link_community_of_contacts, load_contacts, Contacts as RunContacts,
+};
 use crate::util::common::HashSet;
 use crate::util::metadata::LraOptions;
 use data_beans::utilities::name_matching::GeneIndex;
@@ -32,12 +35,21 @@ pub struct PairMap {
     pub competent: Vec<bool>,
     /// The receiver carries the ligand itself.
     pub sender: Vec<bool>,
+    /// What each row gives each of its contacts: its ligand over its size
+    /// factor, the term a neighbour's exposure sums.
+    pub sent: Vec<f64>,
+    /// Under a `--link-community` table, whether each row is a receiver of
+    /// the community; every other row is out of scope, neither exposed nor
+    /// a control. `None`: every row is a receiver.
+    pub in_community: Option<Vec<bool>>,
 }
 
 /// `pair` on the receivers: `ligand_counts` and `receptor_counts` per row
 /// (a complex as its scarcest subunit), exposed above `threshold` (a
 /// table's, [`table_threshold`]), or above the threshold the estimate
-/// would choose ([`dose::choose_threshold`]) when none is given.
+/// would choose ([`dose::choose_threshold`]) when none is given. Every row
+/// is in scope; the viewer draws through [`pair_map_in`].
+#[cfg(test)]
 pub fn pair_map(
     contacts: &Contacts,
     size_factor: &[f64],
@@ -46,18 +58,48 @@ pub fn pair_map(
     receptor_counts: &[f64],
     threshold: Option<f64>,
 ) -> PairMap {
-    let (_, a) = contact_dose(contacts, size_factor, ligand_counts);
-    let tau = table_threshold(&a, threshold);
+    pair_map_in(
+        contacts,
+        None,
+        size_factor,
+        identity_bin,
+        (ligand_counts, receptor_counts),
+        threshold,
+    )
+}
+
+/// A pair on the receivers, its exposure summed over `contacts` (a link
+/// community's, under `--link-community`) and, with `in_community`, the
+/// rows outside it out of scope: the threshold read from the community's
+/// receivers' exposures alone, as lra reads it ([`dose::Exposure::build`]).
+pub fn pair_map_in(
+    contacts: &Contacts,
+    in_community: Option<&[bool]>,
+    size_factor: &[f64],
+    identity_bin: &[usize],
+    (ligand_counts, receptor_counts): (&[f64], &[f64]),
+    threshold: Option<f64>,
+) -> PairMap {
+    let (sent, a) = contact_dose(contacts, size_factor, ligand_counts);
+    let tau = table_threshold(&dose::receiver_doses(&a, in_community), threshold);
     let detected: Vec<bool> = receptor_counts.iter().map(|&r| r > 0.0).collect();
     let grid = &options::COMPETENCE_GRID;
     let level = grid[grid.len() / 2];
+    let mut exposed = dose::exposed(&a, tau);
+    if let Some(inside) = in_community {
+        for (e, &is_inside) in exposed.iter_mut().zip(inside) {
+            *e &= is_inside;
+        }
+    }
     PairMap {
-        exposed: dose::exposed(&a, tau),
+        exposed,
         exposure: a,
         threshold: tau,
         competence: level,
         competent: competence(identity_bin, &detected, level),
         sender: ligand_counts.iter().map(|&l| l > 0.0).collect(),
+        sent,
+        in_community: in_community.map(<[bool]>::to_vec),
     }
 }
 
@@ -138,13 +180,39 @@ impl PairMap {
         self.exposure.len()
     }
 
-    /// Receivers in each [`Class`], in [`Class::ALL`]'s order.
+    /// Whether row `i` is a receiver of the table: of its link community
+    /// under `--link-community`, else every row.
+    pub fn in_scope(&self, i: usize) -> bool {
+        self.in_community.as_ref().is_none_or(|inside| inside[i])
+    }
+
+    /// The rows in scope where `flags` holds.
+    pub fn count_in_scope(&self, flags: &[bool]) -> usize {
+        (0..self.n())
+            .filter(|&i| flags[i] && self.in_scope(i))
+            .count()
+    }
+
+    /// Receivers in scope in each [`Class`], in [`Class::ALL`]'s order.
     pub fn counts(&self) -> [usize; 5] {
         let mut out = [0; 5];
-        for i in 0..self.n() {
+        for i in (0..self.n()).filter(|&i| self.in_scope(i)) {
             out[self.class(i) as usize] += 1;
         }
         out
+    }
+
+    /// The share of receiver `to`'s exposure that its contact `from` gives
+    /// when `to` is exposed (so in scope) and receptor-competent; 0
+    /// otherwise. `from` must be one of `to`'s contacts the exposure is
+    /// summed over.
+    pub fn share(&self, from: usize, to: usize) -> f64 {
+        let active = self.exposed[to] && self.competent[to];
+        if active && self.exposure[to] > 0.0 {
+            self.sent[from] / self.exposure[to]
+        } else {
+            0.0
+        }
     }
 }
 
@@ -173,6 +241,8 @@ pub struct RunFrame {
     pub identity_bin: Vec<usize>,
     /// Each data column's name.
     pub column_names: Vec<Box<str>>,
+    /// Under a `--link-community` table, its community on the rows.
+    community: Option<CommunityScope>,
 }
 
 impl RunFrame {
@@ -202,7 +272,47 @@ impl RunFrame {
         } else {
             Self::excluded_from_files(options, &gene_names, &index)?
         };
-        Self::build(run, (gene_names, index), &excluded)
+        // a --link-community table's exposure runs through its community's
+        // links alone, read from the run as lra read them
+        let community = options
+            .link_community
+            .map(|k| anyhow::Ok((k, link_community_of_contacts(&input, &run)?)))
+            .transpose()?;
+        let frame = Self::build(run, (gene_names, index), &excluded)?;
+        match community {
+            Some((k, of_pair)) => frame.in_link_community(k, &of_pair),
+            None => Ok(frame),
+        }
+    }
+
+    /// These receivers under `--link-community link_community`, each
+    /// contact's community in `community_of_pair`: the exposure through
+    /// the community's links, its receivers alone in scope
+    /// ([`community_scope`], as lra builds it).
+    pub fn in_link_community(
+        mut self,
+        link_community: i64,
+        community_of_pair: &[i64],
+    ) -> anyhow::Result<Self> {
+        // the table was fitted, so its receivers were enough
+        let inputs = community_inputs(&self.run.pairs, community_of_pair, link_community, 1)?;
+        self.community = Some(community_scope(&inputs, &self.row_of, self.n())?);
+        Ok(self)
+    }
+
+    /// The contacts a receiver's exposure is summed over: the community's
+    /// links under `--link-community`, else every contact.
+    pub fn exposure_contacts(&self) -> &Contacts {
+        self.community
+            .as_ref()
+            .map_or(&self.contacts, |c| &c.exposure_contacts)
+    }
+
+    /// Whether rows `a` and `b` are contacts the exposure is summed over.
+    pub fn joined(&self, a: usize, b: usize) -> bool {
+        self.exposure_contacts().adj[a]
+            .binary_search(&(b as u32))
+            .is_ok()
     }
 
     /// The genes the identity left out, for a manifest that does not
@@ -250,6 +360,7 @@ impl RunFrame {
             gene_names,
             index,
             run,
+            community: None,
         })
     }
 
@@ -286,12 +397,12 @@ impl RunFrame {
         };
         let lig = self.complex_counts(&genes(ligand)?)?;
         let rec = self.complex_counts(&genes(receptor)?)?;
-        Ok(pair_map(
-            &self.contacts,
+        Ok(pair_map_in(
+            self.exposure_contacts(),
+            self.community.as_ref().map(|c| c.in_community.as_slice()),
             &self.size_factor,
             &self.identity_bin,
-            &lig,
-            &rec,
+            (&lig, &rec),
             threshold,
         ))
     }

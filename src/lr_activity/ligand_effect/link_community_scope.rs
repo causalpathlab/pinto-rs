@@ -238,17 +238,35 @@ pub fn community_pairs_of_run(
     let community_of_pair = inp.link_community_of_pair.ok_or_else(|| {
         anyhow::anyhow!("--link-community {link_community}: the contacts carry no link communities")
     })?;
-    let pairs = pairs_of_link_community(inp.pairs, community_of_pair, link_community);
+    community_inputs(
+        inp.pairs,
+        community_of_pair,
+        link_community,
+        inp.settings.min_receivers,
+    )
+    .map(Some)
+}
+
+/// Community `link_community`'s links among `pairs` (each pair's community
+/// in `community_of_pair`), to fit with at least `min_receivers`; an error
+/// when none of the pairs is in it.
+pub fn community_inputs(
+    pairs: &[(usize, usize)],
+    community_of_pair: &[i64],
+    link_community: i64,
+    min_receivers: usize,
+) -> anyhow::Result<LinkCommunityInputs> {
+    let pairs = pairs_of_link_community(pairs, community_of_pair, link_community);
     anyhow::ensure!(
         !pairs.is_empty(),
         "--link-community {link_community}: no contact of the run is in that community \
          (`pinto lra link-communities` lists them)"
     );
-    Ok(Some(LinkCommunityInputs {
+    Ok(LinkCommunityInputs {
         link_community,
         pairs,
-        min_receivers: inp.settings.min_receivers,
-    }))
+        min_receivers,
+    })
 }
 
 /// `pinto lra link-communities`: the `--from` run's link communities over its

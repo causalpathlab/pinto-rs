@@ -157,6 +157,9 @@ pub(super) struct MapArgs {
     center: Option<[f32; 2]>,
     zoom: Option<f32>,
     width: Option<usize>,
+    /// Also the selected lra pair's curve, as a second image; this call
+    /// only.
+    curve: bool,
 }
 
 #[derive(Deserialize)]
@@ -300,8 +303,6 @@ impl Open {
     }
 
     pub(super) fn map(&mut self, a: MapArgs) -> anyhow::Result<Vec<Content>> {
-        let next = self.next(&a)?;
-        self.commit(next);
         // Asking for groups, a layer or a gene draws them instead of the pair.
         let regroup = a.level.is_some()
             || a.round.is_some()
@@ -309,6 +310,22 @@ impl Open {
             || a.layer.is_some()
             || a.focus.is_some()
             || a.gene.is_some();
+        // The curve is checked before anything changes: it goes with the
+        // pair's map, never with groups drawn instead.
+        anyhow::ensure!(
+            !(a.curve && regroup),
+            "curve: the pair's curve goes with its map; ask for groups, a layer or a gene without it"
+        );
+        anyhow::ensure!(
+            !a.curve
+                || self
+                    .lra
+                    .as_ref()
+                    .is_some_and(|v| v.selected_row().is_some()),
+            "curve: no lra pair selected; view_lra pair first"
+        );
+        let next = self.next(&a)?;
+        self.commit(next);
         if regroup {
             self.pair_drawn = false;
         }
@@ -326,10 +343,22 @@ impl Open {
         self.drawn = Some(vp);
         // The state as text, not structuredContent: a client that reads
         // that alone would never show the agent the map.
-        Ok(vec![
+        let mut out = vec![
             Content::Png(frame.small_png()?),
             Content::Text(self.state(&vp).to_string()),
-        ])
+        ];
+        if let Some(c) = self
+            .lra
+            .as_ref()
+            .filter(|_| a.curve)
+            .and_then(LraView::curve)
+        {
+            let w = vp.w;
+            let plot =
+                super::curve::still(&c, (w, super::curve::still_height(w)), self.base.theme());
+            out.insert(1, Content::Png(plot.small_png()?));
+        }
+        Ok(out)
     }
 
     /// The view `a` asks for, made in full before any of it is kept: what
@@ -546,7 +575,8 @@ impl Open {
     fn render(&self, vp: &Viewport) -> super::render::Frame {
         if let Some(on) = self.pair_on_map() {
             let lra = self.lra.as_ref().expect("a pair is drawn");
-            let (level, style, gene) = on.drawn(&self.base, lra.show, self.point, self.look);
+            let (level, style, gene) =
+                on.drawn(&self.base, lra.show, self.edges, self.point, self.look);
             return self.base.render(level, &style, gene, vp);
         }
         self.base
@@ -809,7 +839,7 @@ impl Open {
             .and_then(|v| v.still_pair(a.curve));
         if a.curve {
             let w = vp.w;
-            vp = Viewport::fit(vp.window(), w, (w * 3 / 5).max(1));
+            vp = Viewport::fit(vp.window(), w, super::curve::still_height(w));
         }
         let round = match drawn(self.show, self.at, self.round.as_ref()) {
             (show, _, Some(path)) => Some((lupin::absolute(path), show)),
