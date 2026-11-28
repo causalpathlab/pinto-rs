@@ -794,6 +794,18 @@ fn draw_edges(
                 if ay.max(by) + half < canvas.r0 as f32 || ay.min(by) - half >= canvas.r1 as f32 {
                     continue;
                 }
+                if let Some(pair) = &links.pair {
+                    // An lra pair: links in scope faint, the active on top.
+                    if pair.in_scope[e] {
+                        if pair.share[e] > 0. {
+                            on_top.push(e);
+                        } else {
+                            let faint = paint.theme.text();
+                            draw_line(canvas, vp, ends(e), (faint, faint), FAINT_LINK, across);
+                        }
+                    }
+                    continue;
+                }
                 let colour = match &links.ends {
                     None => {
                         let c = edges.community[e];
@@ -817,24 +829,50 @@ fn draw_edges(
                     },
                 };
                 if let Some(c) = colour {
-                    draw_line(canvas, vp, ends(e), c, across);
+                    draw_line(canvas, vp, ends(e), (c, c), LINE_ALPHA, across);
                 }
             }
         }
     }
+    if let Some(pair) = &links.pair {
+        // From the sender's colour at its end to the exposed receptor-positive
+        // receiver's at the other, more opaque the more of its exposure it
+        // carries.
+        let (sender, receiver) = (paint.community(0), paint.community(1));
+        for e in on_top {
+            let (ax, ay, bx, by) = ends(e);
+            let line = if pair.a_sends[e] {
+                (ax, ay, bx, by)
+            } else {
+                (bx, by, ax, ay)
+            };
+            let share = pair.share[e].sqrt();
+            let alpha = FAINT_LINK + (LINE_ALPHA - FAINT_LINK) * share;
+            draw_line(canvas, vp, line, (sender, receiver), alpha, across);
+        }
+        return;
+    }
     let between = paint.look.heterotypic_on(paint.theme);
     for e in on_top {
-        draw_line(canvas, vp, ends(e), between, across);
+        draw_line(canvas, vp, ends(e), (between, between), LINE_ALPHA, across);
     }
 }
 
-/// The line between world points `(ax, ay)` and `(bx, by)` in `c`, its
+/// A link's opacity.
+const LINE_ALPHA: f32 = 0.85;
+
+/// An lra pair's links that carry none of its ligand to a responder.
+const FAINT_LINK: f32 = 0.3;
+
+/// The line between world points `(ax, ay)` and `(bx, by)`, from colour
+/// `c.0` at the first to `c.1` at the second, `alpha` opaque, its
 /// thickness `across` its minor axis.
 fn draw_line(
     canvas: &mut Canvas,
     vp: &Viewport,
     (ax, ay, bx, by): (f32, f32, f32, f32),
-    c: Rgb,
+    (c0, c1): (Rgb, Rgb),
+    alpha: f32,
     across: &[i64],
 ) {
     let (ax, ay) = vp.to_px(ax, ay);
@@ -845,9 +883,17 @@ fn draw_line(
         let t = s as f32 / steps as f32;
         let (px, py) = (ax + t * (bx - ax), ay + t * (by - ay));
         let (px, py) = (px.floor() as i64, py.floor() as i64);
+        let c = if c0 == c1 {
+            c0
+        } else {
+            [0, 1, 2].map(|ch| {
+                let (from, to) = (c0[ch] as f32, c1[ch] as f32);
+                (from + t * (to - from)).round() as u8
+            })
+        };
         for &o in across {
             let (qx, qy) = if steep { (px + o, py) } else { (px, py + o) };
-            canvas.blend(qx, qy, c, 0.85);
+            canvas.blend(qx, qy, c, alpha);
         }
     }
 }

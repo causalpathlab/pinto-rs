@@ -278,6 +278,7 @@ fn links_are_drawn_by_the_groups_of_their_ends() {
         index: index.into(),
         ends: None,
         kinds: (0, 0),
+        pair: None,
     };
     let by_ends = by_community.by_ends(&comm.cluster);
     assert_eq!(by_ends.kinds, (1, 1));
@@ -395,6 +396,7 @@ fn links_take_the_groups_of_their_ends() {
         index: index.into(),
         ends: None,
         kinds: (0, 0),
+        pair: None,
     };
     assert_eq!(links.ends_count(|_| true), None);
     let by_ends = links.by_ends(&[2, 2, 5, NO_CLUSTER]);

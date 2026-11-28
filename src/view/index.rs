@@ -387,6 +387,23 @@ pub struct Links {
     pub ends: Option<Vec<u16>>,
     /// On a grouping, its isotypic and heterotypic links on the tissue.
     pub kinds: (usize, usize),
+    /// On an lra pair's map, what each link carries; `None` elsewhere.
+    pub pair: Option<Arc<PairLinks>>,
+}
+
+/// An lra pair on the links: each link drawn faint when its ends are
+/// contacts the pair's exposure is summed over (the table's link
+/// community's, or every contact), and bright, from its sending end to its
+/// receiving end, by the share of an exposed receptor-competent receiver's
+/// exposure it carries. Links outside are not drawn.
+pub struct PairLinks {
+    pub in_scope: Vec<bool>,
+    /// The larger of the two directions' shares, in [0, 1].
+    pub share: Vec<f32>,
+    /// Whether the link's `a` end is the sender of that share.
+    pub a_sends: Vec<bool>,
+    /// Links in scope, and those carrying a share.
+    pub counts: (usize, usize),
 }
 
 impl Links {
@@ -410,6 +427,7 @@ impl Links {
             index: self.index.clone(),
             ends: Some(ends),
             kinds: (0, 0),
+            pair: None,
         };
         links.kinds = links.ends_count(|_| true).expect("by ends");
         links

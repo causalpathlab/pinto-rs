@@ -5,6 +5,7 @@ use super::averaging::AbfSummary;
 use super::contacts::Contacts;
 use super::options::EffectOpts;
 use super::tissue::Tissue;
+use std::borrow::Cow;
 
 /// The exposure side of a pair's per-row quantities: the same under every
 /// weighting of its program.
@@ -32,18 +33,7 @@ impl Exposure {
             &tissue.size_factor,
             ligand_counts,
         );
-        let tau = match tissue.rows_in_community() {
-            Some(inside) => {
-                let receiver_doses: Vec<f64> = dose
-                    .iter()
-                    .zip(inside)
-                    .filter(|&(_, &is_inside)| is_inside)
-                    .map(|(&d, _)| d)
-                    .collect();
-                choose_threshold(&receiver_doses, opts)
-            }
-            None => choose_threshold(&dose, opts),
-        };
+        let tau = choose_threshold(&receiver_doses(&dose, tissue.rows_in_community()), opts);
         Self {
             tau,
             t: exposed(&dose, tau),
@@ -71,6 +61,20 @@ impl Exposure {
             niche: self.niche.clone(),
             dose: self.dose.clone(),
         }
+    }
+}
+
+/// The doses the threshold is read from: `--link-community`'s receivers'
+/// (`inside` each row's), else every row's. The viewer reads them so too.
+pub fn receiver_doses<'a>(dose: &'a [f64], inside: Option<&[bool]>) -> Cow<'a, [f64]> {
+    match inside {
+        Some(inside) => dose
+            .iter()
+            .zip(inside)
+            .filter(|&(_, &is_inside)| is_inside)
+            .map(|(&d, _)| d)
+            .collect(),
+        None => Cow::Borrowed(dose),
     }
 }
 

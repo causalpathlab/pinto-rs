@@ -295,6 +295,11 @@ fn fill_band(frame: &mut Raster, pts: &[(f32, f32, f32)], c: Lin, alpha: f32) {
 /// Width of a curve the viewer saves (`s`) at export scale 1.
 pub const STILL_WIDTH: usize = 1200;
 
+/// A curve's height `w` wide, as every still draws it.
+pub fn still_height(w: usize) -> usize {
+    (w * 3 / 5).max(1)
+}
+
 /// The plot as a still image `w × h`, its text sized to the image as the
 /// screen sizes it to its cells.
 pub fn still(c: &Curve, (w, h): (usize, usize), theme: Theme) -> Frame {

@@ -387,6 +387,7 @@ impl Base {
             index: index.into(),
             ends: None,
             kinds: (0, 0),
+            pair: None,
         };
         Ok(self.links[i].get_or_init(|| links).clone())
     }

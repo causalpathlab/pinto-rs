@@ -184,6 +184,7 @@ impl Open {
             .collect();
         let q_scope = table.q_scope.to_string();
         let selected = v.selected_row().map(|r| {
+            let curve = table.curve(v.selected.expect("selected"));
             let mut out = json!({
                 "pair": r.name(),
                 "warnings": r.warnings,
@@ -204,7 +205,16 @@ impl Open {
                 "receivers": r.n_receivers,
                 "competent": r.n_competent,
                 "exposed": r.n_exposed,
-                "curve_points": table.curve(v.selected.expect("selected")).len(),
+                "curve_points": curve.len(),
+                "curve": curve.iter().map(|p| json!({
+                    "tau": opt_finite(p.tau),
+                    "quantile": opt_finite(p.quantile),
+                    "effect": opt_finite(p.effect),
+                    "lo": opt_finite(p.lo),
+                    "hi": opt_finite(p.hi),
+                    "band_lo": opt_finite(p.band_lo),
+                    "band_hi": opt_finite(p.band_hi),
+                })).collect::<Vec<_>>(),
             });
             if let Some(on) = v.shown() {
                 let classes: serde_json::Map<_, _> = on
@@ -212,11 +222,14 @@ impl Open {
                     .iter()
                     .map(|(name, _, n)| ((*name).to_string(), Value::from(*n)))
                     .collect();
-                let count = |f: &[bool]| f.iter().filter(|&&x| x).count();
+                let (in_scope, active) = on.link_counts().unzip();
                 out["map"] = json!({
                     "classes": classes,
-                    "exposed": count(&on.map.exposed),
-                    "competent": count(&on.map.competent),
+                    "link_community": v.options().link_community,
+                    "exposed": on.map.count_in_scope(&on.map.exposed),
+                    "competent": on.map.count_in_scope(&on.map.competent),
+                    "links_in_scope": in_scope,
+                    "links_active": active,
                     "threshold": on.map.threshold,
                     "competence": on.map.competence,
                 });
@@ -257,8 +270,17 @@ impl Open {
                         estimate. lra judges nothing; the reader decides. With \
                         a pair, view_map draws it: senders (ligand+), receivers exposed or not \
                         (contact exposure above threshold) and receptor+ or not; show: exposure \
-                        draws the exposure itself. view_export curve: true writes its \
-                        threshold-response curve.",
+                        draws the exposure itself. A --link-community table's exposure runs \
+                        through its community's links alone: cells without one are no \
+                        receivers (link_community, and drawn as none). With edges on, zoomed in, \
+                        the links show: links_in_scope (the contacts the exposure sums over) \
+                        faint, links_active (a sender's ligand reaching an exposed \
+                        receptor+ receiver) from the sender's colour to the receiver's, \
+                        more opaque the larger the share of the receiver's exposure (a ligand+ \
+                        cell is drawn as a sender, though it can receive too). \
+                        curve: the threshold-response points (effect with its CI lo, hi \
+                        and simultaneous band at each threshold tau); view_map curve: \
+                        true draws them under the map, view_export curve: true writes them.",
         })
     }
 }
